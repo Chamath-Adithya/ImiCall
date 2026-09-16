@@ -58,15 +58,12 @@ export class WebRTCClient {
 
   async start(): Promise<void> {
     try {
-      this.setState('connecting');
+      this.state = 'waiting';
 
       // Initialize Passcode-based E2EE using PIN 2023
       await this.e2ee.setPassphrase(`imicall-e2ee-salt-${this.options.passcode}`);
 
-      // Initialize local microphone with voice clarity filter
-      await this.audioManager.initLocalAudio();
-
-      // Connect to signaling server
+      // Connect to signaling server in standby mode
       this.connectSignaling();
     } catch (err: any) {
       console.error('[WebRTC] Start failed:', err);
@@ -231,6 +228,16 @@ export class WebRTCClient {
       return false;
     }
 
+    try {
+      if (!this.audioManager.getLocalStream()) {
+        await this.audioManager.initLocalAudio();
+      }
+    } catch (e: any) {
+      console.error('[WebRTC] Microphone init error:', e);
+      if (this.onError) this.onError('Microphone access is required to place a call.');
+      return false;
+    }
+
     const pinHash = await hashPasscode(enteredPin);
     this.soundManager.startOutgoingRingback();
     this.setState('ringing-outgoing');
@@ -252,6 +259,16 @@ export class WebRTCClient {
   async acceptIncomingCall(enteredPin: string): Promise<boolean> {
     if (enteredPin.trim() !== REQUIRED_PASSCODE) {
       if (this.onError) this.onError(`Invalid Passcode! Secret passcode "${REQUIRED_PASSCODE}" is required to answer.`);
+      return false;
+    }
+
+    try {
+      if (!this.audioManager.getLocalStream()) {
+        await this.audioManager.initLocalAudio();
+      }
+    } catch (e: any) {
+      console.error('[WebRTC] Microphone init error on answer:', e);
+      if (this.onError) this.onError('Microphone access is required to answer call.');
       return false;
     }
 
@@ -315,6 +332,14 @@ export class WebRTCClient {
     this.pc = new RTCPeerConnection(config);
 
     // Attach clean local audio track
+    if (!this.audioManager.getLocalStream()) {
+      try {
+        await this.audioManager.initLocalAudio();
+      } catch (e: any) {
+        console.warn('[WebRTC] Microphone init in peer connection:', e);
+      }
+    }
+
     const localStream = this.audioManager.getLocalStream();
     if (localStream) {
       localStream.getAudioTracks().forEach((track) => {
@@ -526,6 +551,7 @@ export class WebRTCClient {
    */
   public cleanupCallSession() {
     this.stopStatsMonitoring();
+    this.audioManager.cleanup();
     if (this.dataChannel) {
       try {
         this.dataChannel.close();

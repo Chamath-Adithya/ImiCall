@@ -69,7 +69,7 @@ export const App: React.FC = () => {
   const [savedLines, setSavedLines] = useState<SavedLine[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedProfile, setSelectedProfile] = useState<SignalProfile>('balanced');
-  const [callState, setCallState] = useState<CallState>('idle');
+  const [callState, setCallState] = useState<CallState>('waiting');
   const [isPeerOnline, setIsPeerOnline] = useState<boolean>(false);
   const [callDuration, setCallDuration] = useState<number>(0);
 
@@ -352,6 +352,7 @@ export const App: React.FC = () => {
     if (clientRef.current) {
       clientRef.current.close();
     }
+    setCallState('waiting');
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     let signalingUrl: string;
@@ -369,7 +370,7 @@ export const App: React.FC = () => {
     });
 
     client.onStateChange = (newState) => {
-      if (newState === 'disconnected') {
+      if (newState === 'disconnected' || newState === 'idle') {
         setCallState('waiting');
       } else {
         setCallState(newState);
@@ -1171,7 +1172,7 @@ export const App: React.FC = () => {
       )}
 
       {/* VIEW B: PERMANENT PHONE BOOK & SPEED-DIAL HOTLINE */}
-      {hasSavedLine && callState === 'waiting' && (
+      {hasSavedLine && (callState === 'waiting' || callState === 'idle') && (
         <div style={{ maxWidth: '640px', margin: '0 auto', width: '100%' }}>
           {/* ACTIVE CONTACT HERO SPEED-DIAL CARD */}
           {activeContact && (
