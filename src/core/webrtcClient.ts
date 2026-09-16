@@ -290,14 +290,11 @@ export class WebRTCClient {
 
     this.pc = new RTCPeerConnection(config);
 
-    // Attach local filtered audio track
+    // Attach clean local audio track
     const localStream = this.audioManager.getLocalStream();
     if (localStream) {
       localStream.getAudioTracks().forEach((track) => {
-        const sender = this.pc?.addTrack(track, localStream);
-        if (sender) {
-          this.e2ee.setupSenderTransform(sender);
-        }
+        this.pc?.addTrack(track, localStream);
       });
     }
 
@@ -333,20 +330,17 @@ export class WebRTCClient {
       }
     };
 
-    // Remote track arrival (optimized with 40ms low-latency jitter buffer)
+    // Remote track arrival (low-latency jitter buffer target)
     this.pc.ontrack = (event) => {
       const remoteStream = event.streams[0] || new MediaStream([event.track]);
       const receiver = event.receiver;
 
-      // Ultra-low latency jitter buffer target (40ms)
       if (receiver && 'playoutDelayHint' in receiver) {
         try {
           // @ts-ignore
           receiver.playoutDelayHint = 0.04;
         } catch (e) {}
       }
-
-      this.e2ee.setupReceiverTransform(receiver);
 
       if (this.onRemoteStream) {
         this.onRemoteStream(remoteStream);

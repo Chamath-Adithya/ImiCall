@@ -20,8 +20,7 @@ describe('SDP Tuner for Low Bandwidth', () => {
     expect(tuned).toContain('maxaveragebitrate=6000');
     expect(tuned).toContain('useinbandfec=1');
     expect(tuned).toContain('usedtx=1');
-    expect(tuned).toContain('cbr=1');
-    expect(tuned).toContain('maxplaybackrate=8000');
+    expect(tuned).toContain('maxplaybackrate=16000');
     expect(tuned).toContain('a=ptime:60');
     expect(tuned).toContain('a=maxptime:60');
   });
@@ -32,7 +31,7 @@ describe('SDP Tuner for Low Bandwidth', () => {
     expect(tuned).toContain('maxaveragebitrate=12000');
     expect(tuned).toContain('useinbandfec=1');
     expect(tuned).toContain('usedtx=1');
-    expect(tuned).toContain('maxplaybackrate=16000');
+    expect(tuned).toContain('maxplaybackrate=24000');
     expect(tuned).toContain('a=ptime:40');
   });
 

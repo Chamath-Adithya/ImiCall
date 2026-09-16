@@ -1,9 +1,5 @@
-import { VoiceFilterEngine } from './voiceFilter';
-
 export class AudioManager {
-  private rawStream: MediaStream | null = null;
   private localStream: MediaStream | null = null;
-  private voiceFilter: VoiceFilterEngine = new VoiceFilterEngine();
   private audioContext: AudioContext | null = null;
   private localAnalyser: AnalyserNode | null = null;
   private remoteAnalyser: AnalyserNode | null = null;
@@ -11,21 +7,18 @@ export class AudioManager {
   private isMuted: boolean = false;
 
   async initLocalAudio(): Promise<MediaStream> {
-    // Ultra-optimized audio constraints for low bandwidth & voice isolation
+    // Ultra-clean native audio constraints utilizing phone hardware DSP
     const constraints: MediaStreamConstraints = {
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
-        channelCount: 1, // Mono strictly saves 50% bandwidth
-        sampleRate: 16000, // 16kHz voice wideband
+        channelCount: 1, // Mono saves 50% cellular bandwidth
       },
-      video: false, // Pure audio, zero video packet overhead
+      video: false,
     };
 
-    this.rawStream = await navigator.mediaDevices.getUserMedia(constraints);
-    // Apply voice filter (120Hz highpass + 3kHz vocal boost + compressor)
-    this.localStream = this.voiceFilter.processStream(this.rawStream);
+    this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
     this.setupLocalAnalyser(this.localStream);
     await this.requestWakeLock();
     return this.localStream;
@@ -50,16 +43,29 @@ export class AudioManager {
 
   setupRemoteAudio(remoteStream: MediaStream, audioElement: HTMLAudioElement) {
     audioElement.srcObject = remoteStream;
-    audioElement.play().catch((e) => {
-      console.warn('[Audio] Remote audio autoplay blocked:', e);
-    });
+    audioElement.muted = false;
+    audioElement.volume = 1.0;
+
+    const playPromise = audioElement.play();
+    if (playPromise !== undefined) {
+      playPromise.catch((e) => {
+        console.warn('[Audio] Autoplay blocked, unlocking on user tap:', e);
+        const unlock = () => {
+          audioElement.play().catch(() => {});
+          document.removeEventListener('click', unlock);
+          document.removeEventListener('touchstart', unlock);
+        };
+        document.addEventListener('click', unlock);
+        document.addEventListener('touchstart', unlock);
+      });
+    }
 
     try {
-      if (!this.audioContext) {
+      if (!this.audioContext || this.audioContext.state === 'closed') {
         this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
       if (this.audioContext.state === 'suspended') {
-        this.audioContext.resume();
+        this.audioContext.resume().catch(() => {});
       }
 
       const source = this.audioContext.createMediaStreamSource(remoteStream);
@@ -73,8 +79,11 @@ export class AudioManager {
 
   private setupLocalAnalyser(stream: MediaStream) {
     try {
-      if (!this.audioContext) {
+      if (!this.audioContext || this.audioContext.state === 'closed') {
         this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      if (this.audioContext.state === 'suspended') {
+        this.audioContext.resume().catch(() => {});
       }
       const source = this.audioContext.createMediaStreamSource(stream);
       this.localAnalyser = this.audioContext.createAnalyser();
@@ -99,14 +108,18 @@ export class AudioManager {
   }
 
   private calculateVolume(analyser: AnalyserNode): number {
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteFrequencyData(dataArray);
-    let sum = 0;
-    for (let i = 0; i < dataArray.length; i++) {
-      sum += dataArray[i];
+    try {
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        sum += dataArray[i];
+      }
+      const average = sum / dataArray.length;
+      return Math.min(100, Math.round((average / 255) * 100));
+    } catch (e) {
+      return 0;
     }
-    const average = sum / dataArray.length;
-    return Math.min(100, Math.round((average / 255) * 100));
   }
 
   async requestWakeLock() {
@@ -131,11 +144,6 @@ export class AudioManager {
 
   cleanup() {
     this.releaseWakeLock();
-    this.voiceFilter.cleanup();
-    if (this.rawStream) {
-      this.rawStream.getTracks().forEach((track) => track.stop());
-      this.rawStream = null;
-    }
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
       this.localStream = null;

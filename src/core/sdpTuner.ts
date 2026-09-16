@@ -20,20 +20,21 @@ export function tuneSdpForLowBandwidth(sdp: string, profileKey: SignalProfile = 
   }
 
   // Parameters to inject into fmtp line
+  // Note: RFC 7587 states cbr MUST NOT be combined with usedtx=1
   const opusParams: Record<string, string | number> = {
     maxaveragebitrate: profile.bitrate,
     stereo: 0,
     'sprop-stereo': 0,
-    useinbandfec: profile.useFec ? 1 : 0,
-    usedtx: profile.useDtx ? 1 : 0,
-    cbr: profile.id === 'extreme' ? 1 : 0, // Constant bitrate prevents packet bursts
+    useinbandfec: 1, // Forward Error Correction recovers dropped packets
+    usedtx: 1,       // Silence suppression saves cellular data
   };
 
   if (profile.id === 'extreme') {
-    // 8kHz narrowband limit saves massive CPU & bit overhead in 1-bar signals
-    opusParams['maxplaybackrate'] = 8000;
+    opusParams['maxplaybackrate'] = 16000; // Wideband speech (warm and intelligible)
   } else if (profile.id === 'balanced') {
-    opusParams['maxplaybackrate'] = 16000;
+    opusParams['maxplaybackrate'] = 24000;
+  } else {
+    opusParams['maxplaybackrate'] = 48000;
   }
 
   let fmtpFound = false;
@@ -52,14 +53,12 @@ export function tuneSdpForLowBandwidth(sdp: string, profileKey: SignalProfile = 
       inAudioMedia = false;
     }
 
-    // Skip any existing ptime or maxptime lines in audio media to replace with our tuned ones
     if (inAudioMedia && (line.startsWith('a=ptime:') || line.startsWith('a=maxptime:'))) {
       continue;
     }
 
     if (opusPayloadType && line.startsWith(`a=fmtp:${opusPayloadType}`)) {
       fmtpFound = true;
-      // Extract existing parameters
       const spaceIdx = line.indexOf(' ');
       const prefix = line.substring(0, spaceIdx);
       const paramStr = line.substring(spaceIdx + 1);
@@ -86,7 +85,6 @@ export function tuneSdpForLowBandwidth(sdp: string, profileKey: SignalProfile = 
     modifiedLines.push(line);
   }
 
-  // If fmtp wasn't found for opus, append it after rtpmap
   if (opusPayloadType && !fmtpFound) {
     const finalLines: string[] = [];
     for (const line of modifiedLines) {
@@ -111,7 +109,6 @@ function appendPtime(lines: string[], ptime: number, maxptime: number): string[]
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     result.push(line);
-    // Add ptime right after the audio media line or its rtpmap
     if (!added && line.startsWith('m=audio')) {
       result.push(`a=ptime:${ptime}`);
       result.push(`a=maxptime:${maxptime}`);
