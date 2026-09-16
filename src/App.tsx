@@ -11,7 +11,6 @@ import {
   QrCode,
   Copy,
   Check,
-  Radio,
   Lock,
   Volume2,
   BellRing,
@@ -611,7 +610,13 @@ export const App: React.FC = () => {
       <header className="app-header">
         <div className="brand-wrapper">
           <div className="brand-icon">
-            <Radio size={22} />
+            <svg width="26" height="26" viewBox="0 0 512 512" fill="none">
+              <circle cx="256" cy="256" r="155" stroke="#249c6f" strokeWidth="18" strokeLinecap="round" strokeDasharray="24 32" opacity="0.45" />
+              <path d="M 160 210 A 110 110 0 0 1 352 210" stroke="#ffffff" strokeWidth="22" strokeLinecap="round" opacity="0.95" />
+              <path d="M 195 255 A 68 68 0 0 1 317 255" stroke="#249c6f" strokeWidth="24" strokeLinecap="round" />
+              <circle cx="256" cy="300" r="28" fill="#249c6f" />
+              <circle cx="256" cy="300" r="12" fill="#ffffff" />
+            </svg>
           </div>
           <div>
             <h1 className="brand-title">ImiCall</h1>
@@ -621,8 +626,9 @@ export const App: React.FC = () => {
 
         <div className="header-badges">
           <div className="badge-e2ee">
-            <Lock size={13} />
-            <span>Secure Tunnel</span>
+            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#249c6f', display: 'inline-block' }} />
+            <Lock size={12} />
+            <span>Encrypted Tunnel</span>
           </div>
           {hasSavedLine && (
             <button

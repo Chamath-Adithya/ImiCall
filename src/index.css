@@ -1,13 +1,13 @@
 :root {
-  --bg-main: #181818;
-  --bg-card: #1f1f1f;
-  --bg-card-hover: #262626;
+  --bg-main: #141414;
+  --bg-card: #1c1c1c;
+  --bg-card-hover: #222222;
   --border-card: rgba(255, 255, 255, 0.08);
   --border-card-active: #249c6f;
   
   --text-primary: #ffffff;
-  --text-secondary: rgba(255, 255, 255, 0.7);
-  --text-muted: rgba(255, 255, 255, 0.4);
+  --text-secondary: rgba(255, 255, 255, 0.72);
+  --text-muted: rgba(255, 255, 255, 0.45);
 
   --accent-green: #249c6f;
   --accent-green-hover: #1e875f;
@@ -67,28 +67,33 @@ body {
 }
 
 .brand-icon {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   border-radius: var(--radius-md);
-  background: #1f1f1f;
-  border: 1px solid var(--border-card);
+  background: #191919;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--accent-green);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  flex-shrink: 0;
 }
 
 .brand-title {
-  font-size: 1.35rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 1.45rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
   color: #ffffff;
+  line-height: 1.15;
 }
 
 .brand-tagline {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  font-weight: 500;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .header-badges {
@@ -103,10 +108,10 @@ body {
   gap: 0.4rem;
   padding: 0.35rem 0.85rem;
   border-radius: var(--radius-full);
-  background: #1f1f1f;
-  border: 1px solid var(--border-card);
+  background: #191919;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   color: #ffffff;
-  font-size: 0.75rem;
+  font-size: 0.74rem;
   font-weight: 600;
 }
 
