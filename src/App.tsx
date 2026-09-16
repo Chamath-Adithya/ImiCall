@@ -51,12 +51,12 @@ export const App: React.FC = () => {
   // Line & Auth State
   const [lineId, setLineId] = useState<string>('');
   const [passcode, setPasscode] = useState<string>(REQUIRED_PASSCODE);
-  const [incomingPin, setIncomingPin] = useState<string>('');
   const [hasSavedLine, setHasSavedLine] = useState<boolean>(false);
   const [savedLines, setSavedLines] = useState<SavedLine[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<SignalProfile>('balanced');
   const [callState, setCallState] = useState<CallState>('idle');
   const [isPeerOnline, setIsPeerOnline] = useState<boolean>(false);
+  const [callDuration, setCallDuration] = useState<number>(0);
 
   // In-Call Controls
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -100,11 +100,12 @@ export const App: React.FC = () => {
       setIsPushEnabled(true);
     }
 
+    const searchParams = new URLSearchParams(window.location.search);
     const hash = window.location.hash.substring(1);
-    const params = new URLSearchParams(hash);
-    const hashLine = params.get('line') || params.get('room');
-    const hashPin = params.get('pin');
-    const hashName = params.get('name');
+    const hashParams = new URLSearchParams(hash);
+    const hashLine = hashParams.get('line') || hashParams.get('room') || searchParams.get('line') || searchParams.get('room');
+    const hashPin = hashParams.get('pin') || searchParams.get('pin');
+    const hashName = hashParams.get('name') || searchParams.get('name');
 
     let currentList: SavedLine[] = [];
     const savedListRaw = localStorage.getItem(STORAGE_LINES_KEY);
@@ -207,6 +208,28 @@ export const App: React.FC = () => {
     };
   }, [callState]);
 
+  // Active call duration timer
+  useEffect(() => {
+    let interval: any = null;
+    if (callState === 'connected') {
+      setCallDuration(0);
+      interval = setInterval(() => {
+        setCallDuration((prev) => prev + 1);
+      }, 1000);
+    } else {
+      setCallDuration(0);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [callState]);
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
   // Connect to the saved line channel in background
   const connectSavedLine = async (targetLine: string, targetPin: string) => {
     if (clientRef.current) {
@@ -284,6 +307,18 @@ export const App: React.FC = () => {
     setPasscode(targetLine.passcode);
     localStorage.setItem(ACTIVE_LINE_ID_KEY, targetLine.id);
     connectSavedLine(targetLine.id, targetLine.passcode);
+  };
+
+  const handleCallSavedLine = (targetLine: SavedLine, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (targetLine.id !== lineId) {
+      handleSwitchLine(targetLine);
+      setTimeout(() => {
+        handleRingPartner();
+      }, 350);
+    } else {
+      handleRingPartner();
+    }
   };
 
   const handleCreateNewLine = () => {
@@ -413,15 +448,15 @@ export const App: React.FC = () => {
     }
   };
 
-  // Callee answers
+  // Callee answers with 1 tap (no manual PIN typing required)
   const handleAnswerCall = async () => {
     if (!clientRef.current) return;
     clientRef.current.audioManager.resumeAudio();
     setErrorMessage(null);
-    const entered = incomingPin.trim() || passcode;
-    const success = await clientRef.current.acceptIncomingCall(entered);
+    const pinToUse = passcode || REQUIRED_PASSCODE;
+    const success = await clientRef.current.acceptIncomingCall(pinToUse);
     if (!success) {
-      setErrorMessage('Incorrect Passcode! Access denied.');
+      setErrorMessage('Passcode verification failed. Unable to answer call.');
     }
   };
 
@@ -788,6 +823,15 @@ export const App: React.FC = () => {
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                       <button
+                        className="btn btn-primary"
+                        style={{ padding: '0.35rem 0.65rem', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+                        onClick={(e) => handleCallSavedLine(line, e)}
+                        title={`Call ${line.name}`}
+                      >
+                        <Phone size={13} /> Call
+                      </button>
+
+                      <button
                         className="btn btn-secondary"
                         style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem' }}
                         onClick={(e) => handleCopySpecificLineInvite(line, e)}
@@ -809,8 +853,8 @@ export const App: React.FC = () => {
 
                       {!isActive && (
                         <button
-                          className="btn btn-primary"
-                          style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
+                          className="btn btn-secondary"
+                          style={{ padding: '0.35rem 0.65rem', fontSize: '0.75rem' }}
                           onClick={() => handleSwitchLine(line)}
                         >
                           Switch
@@ -879,32 +923,44 @@ export const App: React.FC = () => {
               <PhoneCall size={36} />
             </div>
 
-            <h2 style={{ fontSize: '1.35rem', fontWeight: 700, marginBottom: '0.35rem', color: '#ffffff' }}>
-              Incoming Call
+            <h2 style={{ fontSize: '1.45rem', fontWeight: 700, marginBottom: '0.35rem', color: '#ffffff' }}>
+              Incoming Call...
             </h2>
-            <p style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '1.5rem' }}>
-              Your partner is calling on your dedicated direct line.
+            <p style={{ fontSize: '0.9rem', color: 'rgba(255, 255, 255, 0.75)', marginBottom: '2rem' }}>
+              {savedLines.find((l) => l.id === lineId)?.name || 'Direct Private Line'}
             </p>
 
-            <div className="input-group" style={{ marginBottom: '1.5rem' }}>
-              <label className="input-label" style={{ textAlign: 'left' }}>Passcode (PIN)</label>
-              <input
-                type="password"
-                className="input-field mono"
-                style={{ textAlign: 'center', fontSize: '1.25rem', letterSpacing: '0.3em' }}
-                value={incomingPin}
-                onChange={(e) => setIncomingPin(e.target.value)}
-                placeholder="••••"
-                autoFocus
-              />
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-              <button className="btn btn-primary" style={{ padding: '0.85rem' }} onClick={handleAnswerCall}>
-                <Phone size={18} /> Answer
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <button
+                className="btn btn-primary"
+                style={{
+                  padding: '1rem',
+                  fontSize: '1.05rem',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.5rem',
+                  background: '#249c6f',
+                }}
+                onClick={handleAnswerCall}
+              >
+                <Phone size={20} /> Answer
               </button>
-              <button className="btn btn-danger" style={{ padding: '0.85rem' }} onClick={handleDeclineCall}>
-                <PhoneOff size={18} /> Decline
+              <button
+                className="btn btn-danger"
+                style={{
+                  padding: '1rem',
+                  fontSize: '1.05rem',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.5rem',
+                }}
+                onClick={handleDeclineCall}
+              >
+                <PhoneOff size={20} /> Decline
               </button>
             </div>
           </div>
@@ -918,10 +974,26 @@ export const App: React.FC = () => {
             <span className="pulse-dot" />
             <span>
               {callState === 'connected'
-                ? 'Call Active • Encrypted Line'
+                ? `Call Active • ${formatDuration(callDuration)} • Encrypted Line`
                 : 'Connecting Audio Channel...'}
             </span>
           </div>
+
+          {callState === 'connected' && (
+            <div
+              style={{
+                textAlign: 'center',
+                fontSize: '2rem',
+                fontWeight: 700,
+                color: '#ffffff',
+                fontFamily: 'monospace',
+                letterSpacing: '0.06em',
+                margin: '0.4rem 0 1rem',
+              }}
+            >
+              {formatDuration(callDuration)}
+            </div>
+          )}
 
           {/* Audio Avatars */}
           <div className="audio-avatars-container">
