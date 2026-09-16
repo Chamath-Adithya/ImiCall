@@ -23,6 +23,35 @@ webpush.setVapidDetails(
 
 // Map of roomId -> Map of endpoint -> subscription
 const pushSubscriptions = new Map();
+const SUBSCRIPTIONS_FILE = path.resolve(__dirname, 'subscriptions.json');
+
+function loadSubscriptions() {
+  if (fs.existsSync(SUBSCRIPTIONS_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(SUBSCRIPTIONS_FILE, 'utf8'));
+      for (const [roomId, subs] of Object.entries(data)) {
+        pushSubscriptions.set(roomId, new Map(Object.entries(subs)));
+      }
+      console.log(`[Push] Loaded push subscriptions for ${pushSubscriptions.size} rooms from disk.`);
+    } catch (e) {
+      console.warn('[Push] Could not read subscriptions.json:', e);
+    }
+  }
+}
+
+function saveSubscriptions() {
+  try {
+    const data = {};
+    for (const [roomId, subMap] of pushSubscriptions.entries()) {
+      data[roomId] = Object.fromEntries(subMap.entries());
+    }
+    fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    console.warn('[Push] Could not save subscriptions.json:', e);
+  }
+}
+
+loadSubscriptions();
 
 const MIME_TYPES = {
   '.html': 'text/html',
@@ -77,6 +106,7 @@ const server = http.createServer((req, res) => {
             pushSubscriptions.set(roomKey, new Map());
           }
           pushSubscriptions.get(roomKey).set(subscription.endpoint, subscription);
+          saveSubscriptions();
           console.log(`[Push] Registered subscription for room: ${roomKey}`);
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -194,19 +224,25 @@ wss.on('connection', (ws) => {
       if (type === 'call-ring' && currentRoom) {
         const roomKey = currentRoom.trim().toLowerCase();
         const subs = pushSubscriptions.get(roomKey);
+        const callerEndpoint = payload?.callerEndpoint;
+
         if (subs && subs.size > 0) {
           const pushPayload = JSON.stringify({
-            title: '📞 Incoming Call — ImiCall',
-            body: 'Your partner is calling on your dedicated line. Tap to answer!',
+            title: '📞 Incoming Private Call',
+            body: 'Your partner is calling. Tap to answer now!',
             lineId: roomKey,
             url: `/#line=${encodeURIComponent(roomKey)}&pin=2023`,
           });
 
           for (const [endpoint, sub] of subs.entries()) {
-            webpush.sendNotification(sub, pushPayload, { TTL: 60, urgency: 'high' })
+            if (callerEndpoint && endpoint === callerEndpoint) {
+              continue;
+            }
+            webpush.sendNotification(sub, pushPayload, { TTL: 120, urgency: 'high' })
               .catch((err) => {
                 if (err.statusCode === 410 || err.statusCode === 404) {
                   subs.delete(endpoint);
+                  saveSubscriptions();
                 }
               });
           }

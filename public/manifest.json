@@ -1,0 +1,17 @@
+{
+  "name": "ImiCall Private Hotline",
+  "short_name": "ImiCall",
+  "description": "Encrypted Direct Calling Room for 24/7 private hotline communication.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#181818",
+  "theme_color": "#181818",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    }
+  ]
+}
