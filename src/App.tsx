@@ -5,7 +5,6 @@ import {
   PhoneCall,
   Mic,
   MicOff,
-  ShieldCheck,
   Activity,
   MessageSquare,
   QrCode,
@@ -20,13 +19,15 @@ import {
   Plus,
   Trash2,
   Bell,
-  BookUser,
   Search,
   UserCheck,
   Camera,
   Clipboard,
 } from 'lucide-react';
-import { SignalProfile, NetworkStats, ChatMessage, CallState, SIGNAL_PROFILES, REQUIRED_PASSCODE } from './core/types';
+import { SignalProfile, NetworkStats, ChatMessage, CallState, SIGNAL_PROFILES } from './core/types';
+import { newLineId, newLineSecret, isSecureLine } from './core/privateLine';
+import { runtimeConfig } from './core/runtimeConfig';
+import { localStore } from './core/localStore';
 import { WebRTCClient } from './core/webrtcClient';
 import { PushNotificationManager } from './core/pushManager';
 import { AudioWaveform } from './components/AudioWaveform';
@@ -57,14 +58,19 @@ const ACTIVE_LINE_ID_KEY = 'imicall_active_line_id_v2';
 const LEGACY_STORAGE_KEY = 'imicall_saved_tunnel_v1';
 const MY_NAME_KEY = 'imicall_my_name';
 
-const generateRandomLineId = () => {
-  return 'line-' + Math.floor(1000 + Math.random() * 9000) + '-' + Math.floor(1000 + Math.random() * 9000);
-};
+const generateRandomLineId = newLineId;
 
 export const App: React.FC = () => {
   // Phone Book & Line State
+  const [micReady, setMicReady] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [permissionBusy, setPermissionBusy] = useState(false);
+  const [permissionError, setPermissionError] = useState('');
+  const [onlineLines, setOnlineLines] = useState<Record<string, boolean>>({});
+  const clientsRef = useRef(new Map<string, WebRTCClient>());
+  const linesRef = useRef<SavedLine[]>([]);
   const [lineId, setLineId] = useState<string>('');
-  const [passcode, setPasscode] = useState<string>(REQUIRED_PASSCODE);
+  const [passcode, setPasscode] = useState<string>('');
   const [hasSavedLine, setHasSavedLine] = useState<boolean>(false);
   const [savedLines, setSavedLines] = useState<SavedLine[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -94,7 +100,7 @@ export const App: React.FC = () => {
   const [pastedContactNickname, setPastedContactNickname] = useState<string>('');
   const [serverPublicUrl, setServerPublicUrl] = useState<string>('');
   const [newContactName, setNewContactName] = useState<string>('');
-  const [myDisplayName, setMyDisplayName] = useState<string>(() => localStorage.getItem(MY_NAME_KEY) || '');
+  const [myDisplayName, setMyDisplayName] = useState<string>(() => localStore.getItem(MY_NAME_KEY) || '');
   const [shareContact, setShareContact] = useState<SavedLine | null>(null);
   const [pendingInvite, setPendingInvite] = useState<{
     lineId: string;
@@ -121,190 +127,84 @@ export const App: React.FC = () => {
   };
 
   const saveLinesList = (lines: SavedLine[], activeId: string) => {
+    linesRef.current = lines;
     setSavedLines(lines);
-    localStorage.setItem(STORAGE_LINES_KEY, JSON.stringify(lines));
-    localStorage.setItem(ACTIVE_LINE_ID_KEY, activeId);
+    localStore.setItem(STORAGE_LINES_KEY, JSON.stringify(lines));
+    localStore.setItem(ACTIVE_LINE_ID_KEY, activeId);
   };
 
-  // Load or Save Dedicated Lines from URL or LocalStorage
   useEffect(() => {
-    // Register Service Worker for Background Push Notifications
-    PushNotificationManager.registerServiceWorker();
-    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      setIsPushEnabled(true);
+    let cancelled = false;
+    void PushNotificationManager.registerServiceWorker();
+    navigator.permissions?.query({ name: 'microphone' as PermissionName }).then(status => {
+      if (cancelled) return;
+      setMicReady(status.state === 'granted');
+      setSetupOpen(status.state !== 'granted');
+      status.onchange = () => { if (!cancelled) setMicReady(status.state === 'granted'); };
+    }).catch(() => { if (!cancelled) setSetupOpen(true); });
+    if (!navigator.permissions) setSetupOpen(true);
+    const connection = (navigator as any).connection;
+    if (connection?.saveData || ['2g', 'slow-2g'].includes(connection?.effectiveType)) setSelectedProfile('extreme');
+    runtimeConfig().then(data => { if (!cancelled) setServerPublicUrl(data.publicUrl || ''); }).catch(() => {});
+    let list: SavedLine[] = [];
+    try {
+      const stored = JSON.parse(localStore.getItem(STORAGE_LINES_KEY) || '[]');
+      if (Array.isArray(stored)) list = stored.filter(l => typeof l?.id === 'string' && /^[a-zA-Z0-9_-]{3,80}$/.test(l.id) && typeof l.name === 'string' && typeof l.passcode === 'string').slice(0, 100).map(l => ({ ...l, name: l.name.slice(0, 80) }));
+    } catch { setErrorMessage('Saved contacts could not be read. Your browser may have cleared its storage.'); }
+    const hash = new URLSearchParams(location.hash.slice(1));
+    const inviteId = hash.get('connect') || hash.get('line');
+    const secret = hash.get('pin') || '';
+    if (location.search) {
+      setErrorMessage('For privacy, invites must use the complete link with a # fragment. Ask your contact for a new link.');
+      history.replaceState(null, '', location.pathname + location.hash);
     }
-
-    // Auto-detect 2G / Slow cellular connection and switch audio profile to ultra-low bandwidth (10 kbps)
-    const conn = (navigator as any).connection;
-    if (conn && (conn.effectiveType === '2g' || conn.effectiveType === 'slow-2g' || conn.saveData)) {
-      setSelectedProfile('extreme');
+    if (inviteId) {
+      history.replaceState(null, '', location.pathname);
+      const known = list.find(l => l.id === inviteId && l.passcode === secret);
+      if (!isSecureLine(inviteId, secret)) setErrorMessage('This old invite needs upgrading. Ask your contact to create a new connection.');
+      else if (!known) {
+        setPendingInvite({ lineId: inviteId, pin: secret, senderName: hash.get('from')?.slice(0, 80) || 'Your contact', myName: '' });
+        setPendingInviteContactName(hash.get('from')?.slice(0, 80) || 'Your contact');
+        setPendingInviteMyName(localStore.getItem(MY_NAME_KEY) || '');
+      } else localStore.setItem(ACTIVE_LINE_ID_KEY, known.id);
     }
-
-    // Fetch public tunnel URL and server config
-    fetch('/api/config')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data && data.publicUrl) {
-          setServerPublicUrl(data.publicUrl);
-        }
-      })
-      .catch(() => {});
-
-    // Parse URL params / hash
-    const searchParams = new URLSearchParams(window.location.search);
-    const hash = window.location.hash.substring(1);
-    const hashParams = new URLSearchParams(hash);
-
-    const hashLine =
-      hashParams.get('connect') ||
-      hashParams.get('line') ||
-      hashParams.get('room') ||
-      searchParams.get('connect') ||
-      searchParams.get('line') ||
-      searchParams.get('room');
-    const hashPin = hashParams.get('pin') || searchParams.get('pin') || REQUIRED_PASSCODE;
-    const hashFrom =
-      hashParams.get('from') ||
-      hashParams.get('caller') ||
-      hashParams.get('name') ||
-      searchParams.get('from') ||
-      searchParams.get('caller') ||
-      searchParams.get('name');
-    const hashTo = hashParams.get('to') || hashParams.get('callee') || searchParams.get('to') || searchParams.get('callee');
-
-    let currentList: SavedLine[] = [];
-    const savedListRaw = localStorage.getItem(STORAGE_LINES_KEY);
-    if (savedListRaw) {
-      try {
-        currentList = JSON.parse(savedListRaw) || [];
-      } catch (e) {}
-    }
-
-    // Migrate from legacy single-line storage if present
-    if (currentList.length === 0) {
-      const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
-      if (legacy) {
-        try {
-          const parsed = JSON.parse(legacy);
-          if (parsed.lineId) {
-            currentList.push({
-              id: parsed.lineId,
-              name: 'Primary Partner',
-              passcode: parsed.passcode || REQUIRED_PASSCODE,
-              createdAt: Date.now(),
-            });
-          }
-        } catch (e) {}
-      }
-    }
-
-    // Check for deleted connections from server to keep mutual deletion in sync
-    fetch('/api/deleted-connections')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data && Array.isArray(data.deletedRooms) && data.deletedRooms.length > 0) {
-          const delSet = new Set(data.deletedRooms.map((r: string) => r.toLowerCase()));
-          setSavedLines((prev) => {
-            const cleaned = prev.filter((l) => !delSet.has(l.id.toLowerCase()));
-            if (cleaned.length !== prev.length) {
-              if (cleaned.length === 0) {
-                const freshId = generateRandomLineId();
-                const freshLine: SavedLine = {
-                  id: freshId,
-                  name: 'Primary Partner',
-                  passcode: REQUIRED_PASSCODE,
-                  createdAt: Date.now(),
-                };
-                cleaned.push(freshLine);
-              }
-              saveLinesList(cleaned, cleaned[0]?.id || '');
-              return cleaned;
-            }
-            return prev;
-          });
-        }
-      })
-      .catch(() => {});
-
-    // If incoming invite URL hash/params
-    if (hashLine) {
-      const pinToUse = hashPin || REQUIRED_PASSCODE;
-      const existing = currentList.find((l) => l.id.toLowerCase() === hashLine.toLowerCase());
-
-      if (existing) {
-        saveLinesList(currentList, existing.id);
-        setLineId(existing.id);
-        setPasscode(existing.passcode);
-        setHasSavedLine(true);
-        connectSavedLine(existing.id, existing.passcode);
-        window.history.replaceState(null, '', window.location.pathname);
-        return;
-      }
-
-      // Incoming connection invitation from partner (QR scan or shared invite link)
-      if (hashFrom || hashParams.has('connect') || searchParams.has('connect')) {
-        const senderDisplayName = hashFrom || 'Partner';
-        const mySavedName = localStorage.getItem(MY_NAME_KEY) || hashTo || '';
-        setPendingInvite({
-          lineId: hashLine,
-          senderName: senderDisplayName,
-          myName: mySavedName,
-          pin: pinToUse,
-        });
-        setPendingInviteContactName(senderDisplayName);
-        setPendingInviteMyName(mySavedName);
-        setSavedLines(currentList);
-        return;
-      } else {
-        // Direct line URL (e.g. #line=...&pin=...) -> Auto-save & connect directly
-        const lineNameToUse = `Contact ${currentList.length + 1}`;
-        currentList.push({
-          id: hashLine,
-          name: lineNameToUse,
-          passcode: pinToUse,
-          createdAt: Date.now(),
-        });
-        saveLinesList(currentList, hashLine);
-        setLineId(hashLine);
-        setPasscode(pinToUse);
-        setHasSavedLine(true);
-        connectSavedLine(hashLine, pinToUse);
-        return;
-      }
-    }
-
-    // If existing saved lines
-    if (currentList.length > 0) {
-      const activeId = localStorage.getItem(ACTIVE_LINE_ID_KEY);
-      const activeLine = currentList.find((l) => l.id === activeId) || currentList[0];
-      setSavedLines(currentList);
-      setLineId(activeLine.id);
-      setPasscode(activeLine.passcode);
-      setHasSavedLine(true);
-      connectSavedLine(activeLine.id, activeLine.passcode);
-      return;
-    }
-
-    // Brand new visitor: create initial contact line
-    const firstId = generateRandomLineId();
-    const defaultLine: SavedLine = {
-      id: firstId,
-      name: 'Primary Partner',
-      passcode: REQUIRED_PASSCODE,
-      createdAt: Date.now(),
-    };
-    saveLinesList([defaultLine], firstId);
-    setLineId(firstId);
-    setPasscode(REQUIRED_PASSCODE);
-    setHasSavedLine(true);
-    connectSavedLine(firstId, REQUIRED_PASSCODE);
+    const wakeId = hash.get('wake');
+    if (wakeId) { if (list.some(l => l.id === wakeId)) localStore.setItem(ACTIVE_LINE_ID_KEY, wakeId); history.replaceState(null, '', location.pathname); }
+    if (!list.length) list = [{ id: newLineId(), name: 'Your first connection', passcode: newLineSecret(), createdAt: Date.now() }];
+    const active = list.find(l => l.id === localStore.getItem(ACTIVE_LINE_ID_KEY)) || list[0];
+    saveLinesList(list, active.id);
+    setLineId(active.id); setPasscode(active.passcode); setHasSavedLine(true);
+    return () => { cancelled = true; clientsRef.current.forEach(c => c.close()); clientsRef.current.clear(); clientRef.current = null; };
   }, []);
+
+  useEffect(() => {
+    linesRef.current = savedLines;
+    for (const [id, client] of clientsRef.current) {
+      if (!savedLines.some(l => l.id === id)) { client.close(); clientsRef.current.delete(id); }
+    }
+    for (const line of savedLines) if (isSecureLine(line.id, line.passcode)) ensureClient(line);
+    const active = savedLines.find(l => l.id === lineId);
+    if (active) void connectSavedLine(active.id, active.passcode);
+  }, [savedLines, lineId]);
+
+  const requestMicrophone = async () => {
+    setPermissionBusy(true); setPermissionError('');
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Open ImiCall over HTTPS in a supported browser.');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      stream.getTracks().forEach(track => track.stop());
+      setMicReady(true); setSetupOpen(false);
+    } catch (error) {
+      setPermissionError(error instanceof Error && error.name === 'NotAllowedError' ? 'Microphone access is required to make and answer calls. Open this site’s browser permissions, allow Microphone, then try again.' : 'Microphone unavailable. Connect a microphone and allow access in browser settings. HTTPS is required.');
+      setMicReady(false);
+    } finally { setPermissionBusy(false); }
+  };
 
   // Poll volume for VU visualizer
   useEffect(() => {
     if (callState === 'connected') {
       volumeIntervalRef.current = setInterval(() => {
-        if (clientRef.current) {
+        if (clientRef.current && !document.hidden) {
           setLocalVolume(clientRef.current.audioManager.getLocalVolume());
           setRemoteVolume(clientRef.current.audioManager.getRemoteVolume());
         }
@@ -347,134 +247,67 @@ export const App: React.FC = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Connect to the saved line channel in background
-  const connectSavedLine = async (targetLine: string, targetPin: string) => {
-    if (clientRef.current) {
-      clientRef.current.close();
-    }
-    setCallState('waiting');
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    let signalingUrl: string;
-    if (window.location.port === '3000') {
-      signalingUrl = `${protocol}//${window.location.hostname || 'localhost'}:8080`;
-    } else {
-      signalingUrl = `${protocol}//${window.location.host}/ws`;
-    }
-
-    const client = new WebRTCClient({
-      signalingUrl,
-      roomId: targetLine.trim().toLowerCase(),
-      passcode: targetPin.trim(),
-      profile: selectedProfile,
-    });
-
-    client.onStateChange = (newState) => {
-      if (newState === 'disconnected' || newState === 'idle') {
-        setCallState('waiting');
-      } else {
-        setCallState(newState);
+  const ensureClient = (line: SavedLine) => {
+    const existing = clientsRef.current.get(line.id);
+    if (existing) return existing;
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const client = new WebRTCClient({ signalingUrl: `${protocol}//${location.host}/ws`, roomId: line.id, passcode: line.passcode, profile: selectedProfile });
+    clientsRef.current.set(line.id, client);
+    client.onStateChange = state => {
+      if (state === 'ringing-incoming' && clientRef.current !== client) {
+        if (clientRef.current && !['waiting', 'idle', 'error'].includes(clientRef.current.getState())) { client.declineIncomingCall(); return; }
+        clientRef.current = client; setLineId(line.id); setPasscode(line.passcode);
+        localStore.setItem(ACTIVE_LINE_ID_KEY, line.id);
       }
-      if (newState === 'waiting') {
-        setNetworkStats(null);
+      if (clientRef.current === client) {
+        setCallState(['idle', 'disconnected', 'error'].includes(state) ? 'waiting' : state);
+        if (state === 'waiting') { setNetworkStats(null); setChatMessages([]); setIsMuted(false); }
       }
-      if (newState === 'error') {
-        setErrorMessage('Failed to connect to line.');
+      if (state === 'waiting' && localStore.getItem('imicall_push_optin') === 'yes') {
+        void PushNotificationManager.subscribeToLine(line.id, line.passcode).then(ok => { if (clientRef.current === client) setIsPushEnabled(ok); });
       }
     };
+    client.onPeerStatusChange = online => { setOnlineLines(prev => ({ ...prev, [line.id]: online })); if (clientRef.current === client) setIsPeerOnline(online); };
+    client.onStatsUpdate = stats => { if (clientRef.current === client) setNetworkStats(stats); };
+    client.onRemoteStream = stream => { if (clientRef.current === client && remoteAudioRef.current) client.audioManager.setupRemoteAudio(stream, remoteAudioRef.current); };
+    client.onChatMessage = message => { if (clientRef.current === client) { setChatMessages(prev => [...prev.slice(-199), message]); setHasUnreadChat(true); } };
+    client.onProfileChange = profile => { if (clientRef.current === client) setSelectedProfile(profile); };
+    client.onContactDeleted = () => { showToast('Your contact removed this connection. You can remove your local copy.'); };
+    client.onError = error => { if (clientRef.current === client) setErrorMessage(error); };
+    void client.start();
+    return client;
+  };
 
-    client.onPeerStatusChange = (isOnline) => {
-      setIsPeerOnline(isOnline);
-    };
-
-    client.onStatsUpdate = (stats) => {
-      setNetworkStats(stats);
-    };
-
-    client.onRemoteStream = (stream) => {
-      if (remoteAudioRef.current) {
-        client.audioManager.setupRemoteAudio(stream, remoteAudioRef.current);
-      }
-    };
-
-    client.onChatMessage = (msg) => {
-      setChatMessages((prev) => [...prev, msg]);
-      if (!isChatOpen) setHasUnreadChat(true);
-    };
-
-    client.onProfileChange = (newProfile) => {
-      setSelectedProfile(newProfile);
-    };
-
-    client.onContactDeleted = (deletedRoomId: string) => {
-      const normDeleted = deletedRoomId.trim().toLowerCase();
-      setSavedLines((prev) => {
-        const remaining = prev.filter((l) => l.id.trim().toLowerCase() !== normDeleted);
-        let nextActive = '';
-        if (remaining.length === 0) {
-          const freshId = generateRandomLineId();
-          const freshLine: SavedLine = {
-            id: freshId,
-            name: 'Primary Partner',
-            passcode: REQUIRED_PASSCODE,
-            createdAt: Date.now(),
-          };
-          remaining.push(freshLine);
-          nextActive = freshId;
-        } else {
-          nextActive = remaining[0].id;
-        }
-        localStorage.setItem(STORAGE_LINES_KEY, JSON.stringify(remaining));
-        localStorage.setItem(ACTIVE_LINE_ID_KEY, nextActive);
-        setLineId(nextActive);
-        setPasscode(remaining[0].passcode);
-        connectSavedLine(nextActive, remaining[0].passcode);
-        return remaining;
-      });
-      showToast('⚠️ Contact connection was removed by partner.');
-    };
-
-    client.onError = (err) => {
-      setErrorMessage(err);
-    };
-
+  const connectSavedLine = async (id: string, secret: string) => {
+    if (!isSecureLine(id, secret)) { clientRef.current = null; setCallState('waiting'); return; }
+    const line = linesRef.current.find(l => l.id === id) || { id, name: 'Contact', passcode: secret, createdAt: Date.now() };
+    const client = ensureClient(line);
     clientRef.current = client;
-    await client.start();
-
-    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      PushNotificationManager.subscribeToLine(targetLine).then((ok) => {
-        if (ok) setIsPushEnabled(true);
-      });
-    }
+    setIsPeerOnline(client.isPeerPresent());
+    setCallState(client.getState() === 'idle' ? 'waiting' : client.getState());
   };
-
-  const handleSwitchLine = (targetLine: SavedLine) => {
-    setLineId(targetLine.id);
-    setPasscode(targetLine.passcode);
-    localStorage.setItem(ACTIVE_LINE_ID_KEY, targetLine.id);
-    connectSavedLine(targetLine.id, targetLine.passcode);
+  const handleSwitchLine = (line: SavedLine) => {
+    setLineId(line.id); setPasscode(line.passcode);
+    localStore.setItem(ACTIVE_LINE_ID_KEY, line.id);
+    void connectSavedLine(line.id, line.passcode);
   };
-
-  const handleCallSavedLine = (targetLine: SavedLine, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (targetLine.id !== lineId) {
-      handleSwitchLine(targetLine);
-      setTimeout(() => {
-        handleRingPartner();
-      }, 350);
-    } else {
-      handleRingPartner();
-    }
+  const handleCallSavedLine = async (line: SavedLine, e: React.MouseEvent) => {
+    e.stopPropagation(); handleSwitchLine(line);
+    if (!micReady) { setSetupOpen(true); return; }
+    if (!isSecureLine(line.id, line.passcode)) { setErrorMessage('Upgrade this older connection before calling.'); return; }
+    setErrorMessage(null);
+    await ensureClient(line).ringPartner(line.passcode);
   };
 
   // Add Contact flow
   const handleCreateContact = () => {
-    const nameToUse = newContactName.trim() || `Contact ${savedLines.length + 1}`;
+    if (savedLines.length >= 100) { setErrorMessage('Your phone book supports up to 100 connections. Remove an unused contact first.'); return; }
+    const nameToUse = newContactName.trim().slice(0, 80) || `Contact ${savedLines.length + 1}`;
     const idToUse = generateRandomLineId();
-    const pinToUse = REQUIRED_PASSCODE;
+    const pinToUse = newLineSecret();
 
     if (myDisplayName.trim()) {
-      localStorage.setItem(MY_NAME_KEY, myDisplayName.trim());
+      localStore.setItem(MY_NAME_KEY, myDisplayName.trim());
     }
 
     const newContact: SavedLine = {
@@ -509,7 +342,7 @@ export const App: React.FC = () => {
 
     let parsedLineId = '';
     let parsedSender = '';
-    let parsedPin = REQUIRED_PASSCODE;
+    let parsedPin = '';
 
     try {
       if (raw.includes('#') || raw.includes('?')) {
@@ -536,7 +369,7 @@ export const App: React.FC = () => {
           searchParams.get('name') ||
           '';
 
-        parsedPin = hashParams.get('pin') || searchParams.get('pin') || REQUIRED_PASSCODE;
+        parsedPin = hashParams.get('pin') || searchParams.get('pin') || '';
       }
     } catch (e) {}
 
@@ -546,8 +379,8 @@ export const App: React.FC = () => {
       }
     }
 
-    if (!parsedLineId) {
-      setErrorMessage('Invalid invite link or Room ID. Please paste a valid link or code.');
+    if (!isSecureLine(parsedLineId, parsedPin)) {
+      setErrorMessage('Use the full private invitation link, including its secret. Older links must be upgraded.');
       return;
     }
 
@@ -588,23 +421,23 @@ export const App: React.FC = () => {
     if (!pendingInvite) return;
     const contactName = pendingInviteContactName.trim() || pendingInvite.senderName || 'Partner';
     if (pendingInviteMyName.trim()) {
-      localStorage.setItem(MY_NAME_KEY, pendingInviteMyName.trim());
+      localStore.setItem(MY_NAME_KEY, pendingInviteMyName.trim());
       setMyDisplayName(pendingInviteMyName.trim());
     }
 
     const newContact: SavedLine = {
       id: pendingInvite.lineId,
       name: contactName,
-      passcode: pendingInvite.pin || REQUIRED_PASSCODE,
+      passcode: pendingInvite.pin || '',
       createdAt: Date.now(),
     };
 
     const updated = [newContact, ...savedLines.filter((l) => l.id.toLowerCase() !== pendingInvite.lineId.toLowerCase())];
     saveLinesList(updated, pendingInvite.lineId);
     setLineId(pendingInvite.lineId);
-    setPasscode(pendingInvite.pin || REQUIRED_PASSCODE);
+    setPasscode(pendingInvite.pin || '');
     setHasSavedLine(true);
-    connectSavedLine(pendingInvite.lineId, pendingInvite.pin || REQUIRED_PASSCODE);
+    connectSavedLine(pendingInvite.lineId, pendingInvite.pin || '');
 
     window.history.replaceState(null, '', window.location.pathname);
     setPendingInvite(null);
@@ -613,17 +446,11 @@ export const App: React.FC = () => {
 
   const handleDeleteLine = (idToDelete: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!window.confirm("Remove this contact from your browser? Keep their invite if you want to reconnect later.")) return;
 
-    // 1. Notify partner through WebRTC WebSocket signaling
-    clientRef.current?.notifyContactDeleted(idToDelete);
-
-    // 2. Persist deletion on signaling server and clear Push subscriptions
-    fetch('/api/delete-connection', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ roomId: idToDelete }),
-    }).catch(() => {});
-
+    const removed = savedLines.find(line => line.id === idToDelete);
+    if (removed) void PushNotificationManager.unsubscribeFromLine(removed.id, removed.passcode);
+    clientsRef.current.get(idToDelete)?.notifyContactDeleted(idToDelete);
     // 3. Update locally
     const updated = savedLines.filter((l) => l.id !== idToDelete);
     let nextActive = lineId;
@@ -631,8 +458,8 @@ export const App: React.FC = () => {
       const freshId = generateRandomLineId();
       const freshLine: SavedLine = {
         id: freshId,
-        name: 'Primary Partner',
-        passcode: REQUIRED_PASSCODE,
+        name: 'Your first connection',
+        passcode: newLineSecret(),
         createdAt: Date.now(),
       };
       updated.push(freshLine);
@@ -646,7 +473,7 @@ export const App: React.FC = () => {
     setPasscode(activeObj.passcode);
     saveLinesList(updated, nextActive);
     connectSavedLine(nextActive, activeObj.passcode);
-    showToast('Contact removed from Phone Book and partner notified.');
+    showToast('Contact removed from this browser.');
   };
 
   const getContactInviteUrl = (contact: SavedLine) => {
@@ -654,20 +481,20 @@ export const App: React.FC = () => {
     if (serverPublicUrl && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
       baseUrl = serverPublicUrl;
     }
-    const myStoredName = localStorage.getItem(MY_NAME_KEY) || myDisplayName || 'Partner';
+    const myStoredName = localStore.getItem(MY_NAME_KEY) || myDisplayName || 'Partner';
     return `${baseUrl}/#connect=${encodeURIComponent(contact.id)}&from=${encodeURIComponent(myStoredName)}&to=${encodeURIComponent(contact.name)}&pin=${encodeURIComponent(contact.passcode)}`;
   };
 
   const getWhatsAppShareUrl = (contact: SavedLine) => {
     const inviteUrl = getContactInviteUrl(contact);
-    const myStoredName = localStorage.getItem(MY_NAME_KEY) || myDisplayName || 'Your partner';
+    const myStoredName = localStore.getItem(MY_NAME_KEY) || myDisplayName || 'Your partner';
     const text = `Hey ${contact.name}! Connect with ${myStoredName} on ImiCall Private Calling. Tap this link to add me to your Phone Book: ${inviteUrl}`;
     return `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
   };
 
   const handleCopyContactLink = (contact: SavedLine, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    navigator.clipboard.writeText(getContactInviteUrl(contact));
+    navigator.clipboard.writeText(getContactInviteUrl(contact)).catch(() => setErrorMessage('Copy failed. Use the QR code or allow clipboard access.'));
     setCopiedLineId(contact.id);
     showToast(`Invite link for "${contact.name}" copied!`);
     setTimeout(() => setCopiedLineId(null), 2500);
@@ -676,15 +503,20 @@ export const App: React.FC = () => {
   const handleCopyActiveInvite = () => {
     const activeContact = savedLines.find((l) => l.id === lineId);
     if (!activeContact) return;
-    navigator.clipboard.writeText(getContactInviteUrl(activeContact));
+    navigator.clipboard.writeText(getContactInviteUrl(activeContact)).catch(() => setErrorMessage('Copy failed. Use the QR code or allow clipboard access.'));
     setCopiedLink(true);
     showToast('Connection invite link copied!');
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  const handleResetLine = () => {
-    localStorage.removeItem(STORAGE_LINES_KEY);
-    localStorage.removeItem(ACTIVE_LINE_ID_KEY);
+  const handleResetLine = async () => {
+    if (!window.confirm('Remove all ImiCall contacts, your saved name and notification subscriptions from this browser? You will need fresh invites to reconnect.')) return;
+    await disablePush();
+    clientsRef.current.forEach(client => client.close()); clientsRef.current.clear();
+    [MY_NAME_KEY, LEGACY_STORAGE_KEY, 'imicall_device_v2'].forEach(key => localStore.removeItem(key));
+    setMyDisplayName('');
+    localStore.removeItem(STORAGE_LINES_KEY);
+    localStore.removeItem(ACTIVE_LINE_ID_KEY);
     if (clientRef.current) {
       clientRef.current.close();
       clientRef.current = null;
@@ -692,29 +524,29 @@ export const App: React.FC = () => {
     const firstId = generateRandomLineId();
     const defaultLine: SavedLine = {
       id: firstId,
-      name: 'Primary Partner',
-      passcode: REQUIRED_PASSCODE,
+      name: 'Your first connection',
+      passcode: newLineSecret(),
       createdAt: Date.now(),
     };
     saveLinesList([defaultLine], firstId);
     setLineId(firstId);
-    setPasscode(REQUIRED_PASSCODE);
+    setPasscode(defaultLine.passcode);
     setIsSettingsOpen(false);
-    connectSavedLine(firstId, REQUIRED_PASSCODE);
+    connectSavedLine(firstId, defaultLine.passcode);
     showToast('Phone Book reset to new primary line.');
   };
 
   // 1-Tap Call Partner
   const handleRingPartner = async () => {
+    if (!micReady) { setSetupOpen(true); return; }
+    if (!isSecureLine(lineId, passcode)) { setErrorMessage('Upgrade this older connection before calling.'); return; }
     if (!clientRef.current) {
       await connectSavedLine(lineId, passcode);
     }
     clientRef.current?.audioManager.resumeAudio();
     setErrorMessage(null);
     const success = await clientRef.current?.ringPartner(passcode);
-    if (!success) {
-      setErrorMessage('Passcode verification failed.');
-    }
+    if (!success) setMicReady(false);
   };
 
   // Callee answers with 1 tap (no manual PIN typing required)
@@ -722,11 +554,9 @@ export const App: React.FC = () => {
     if (!clientRef.current) return;
     clientRef.current.audioManager.resumeAudio();
     setErrorMessage(null);
-    const pinToUse = passcode || REQUIRED_PASSCODE;
+    const pinToUse = passcode || '';
     const success = await clientRef.current.acceptIncomingCall(pinToUse);
-    if (!success) {
-      setErrorMessage('Passcode verification failed. Unable to answer call.');
-    }
+    if (!success) { setMicReady(false); setSetupOpen(true); }
   };
 
   const handleDeclineCall = () => {
@@ -767,14 +597,9 @@ export const App: React.FC = () => {
 
   const handleSendMessage = (text: string) => {
     if (!clientRef.current) return;
-    const msg: ChatMessage = {
-      id: Math.random().toString(36).substring(7),
-      sender: 'me',
-      text,
-      timestamp: Date.now(),
-    };
-    clientRef.current.sendChatMessage(text);
-    setChatMessages((prev) => [...prev, msg]);
+    const msg = clientRef.current.sendChatMessage(text);
+    if (msg) setChatMessages(prev => [...prev.slice(-199), msg]);
+    else showToast('Message not sent. Wait for the call connection and try again.');
   };
 
   const handleProfileSwitch = (newProfile: SignalProfile) => {
@@ -785,13 +610,29 @@ export const App: React.FC = () => {
   };
 
   const handleEnablePush = async () => {
-    const ok = await PushNotificationManager.subscribeToLine(lineId);
-    if (ok) {
-      setIsPushEnabled(true);
-      showToast('🔔 Background Ringing Enabled! Calls will ring when phone is closed.');
-    } else {
-      setErrorMessage('Push Notification permission was denied or not supported in this browser.');
-    }
+    if (!('Notification' in window) || !('PushManager' in window)) { setErrorMessage('Notifications are unavailable here. On iPhone, add ImiCall to your Home Screen and open it there.'); return; }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') { setErrorMessage('Notifications are off. Allow them in browser settings to receive background alerts.'); return; }
+    localStore.setItem('imicall_push_optin', 'yes');
+    const results = await Promise.all(savedLines.filter(l => isSecureLine(l.id, l.passcode)).map(l => PushNotificationManager.subscribeToLine(l.id, l.passcode)));
+    setIsPushEnabled(results.length > 0 && results.every(Boolean));
+    showToast(results.every(Boolean) ? 'Call alerts enabled. Delivery depends on your browser and device.' : 'Some alerts could not be enabled. Reconnect, then try again.');
+  };
+  useEffect(() => {
+    const renew = setInterval(() => {
+      if (localStore.getItem('imicall_push_optin') === 'yes') for (const line of linesRef.current) if (isSecureLine(line.id, line.passcode)) void PushNotificationManager.subscribeToLine(line.id, line.passcode);
+    }, 3600000);
+    return () => clearInterval(renew);
+  }, []);
+  const disablePush = async () => {
+    localStore.removeItem('imicall_push_optin');
+    await PushNotificationManager.disable(savedLines); setIsPushEnabled(false); showToast('Background call alerts disabled.');
+  };
+  const upgradeLine = () => {
+    if (!activeContact) return;
+    const upgraded = { ...activeContact, id: newLineId(), passcode: newLineSecret(), createdAt: Date.now() };
+    saveLinesList(savedLines.map(l => l.id === activeContact.id ? upgraded : l), upgraded.id);
+    handleSwitchLine(upgraded); setShareContact(upgraded);
   };
 
   const activeContact = savedLines.find((l) => l.id === lineId) || savedLines[0];
@@ -809,18 +650,10 @@ export const App: React.FC = () => {
       {/* HEADER */}
       <header className="app-header">
         <div className="brand-wrapper">
-          <div className="brand-icon">
-            <svg width="26" height="26" viewBox="0 0 512 512" fill="none">
-              <circle cx="256" cy="256" r="155" stroke="#249c6f" strokeWidth="18" strokeLinecap="round" strokeDasharray="24 32" opacity="0.45" />
-              <path d="M 160 210 A 110 110 0 0 1 352 210" stroke="#ffffff" strokeWidth="22" strokeLinecap="round" opacity="0.95" />
-              <path d="M 195 255 A 68 68 0 0 1 317 255" stroke="#249c6f" strokeWidth="24" strokeLinecap="round" />
-              <circle cx="256" cy="300" r="28" fill="#249c6f" />
-              <circle cx="256" cy="300" r="12" fill="#ffffff" />
-            </svg>
-          </div>
+          <img className="brand-icon" src="/icon.svg" alt="" width="40" height="40" />
           <div>
             <h1 className="brand-title">ImiCall</h1>
-            <span className="brand-tagline">Private Calling & Phone Book</span>
+            <span className="brand-tagline">A private line to your people.</span>
           </div>
         </div>
 
@@ -828,7 +661,7 @@ export const App: React.FC = () => {
           <div className="badge-e2ee">
             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#249c6f', display: 'inline-block' }} />
             <Lock size={12} />
-            <span>Encrypted Tunnel</span>
+            <span>Private by design</span>
           </div>
           {hasSavedLine && (
             <button
@@ -843,12 +676,22 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {setupOpen && <div className="modal-backdrop permission-backdrop"><section className="modal-card permission-setup" role="dialog" aria-modal="true" aria-labelledby="permission-title">
+        <img src="/icon.svg" width="48" height="48" alt="" /><span className="eyebrow">ONE SMALL STEP</span>
+        <h2 id="permission-title">Make room for a hello.</h2><p>ImiCall needs your microphone for voice calls. No account, phone number or contact upload needed.</p>
+        <div className="permission-detail"><Mic size={22} /><div><strong>Microphone · required for calls</strong><p>We check access, then switch it off. It is only used while placing or answering a call.</p></div></div>
+        {permissionError && <p className="permission-error" role="alert">{permissionError}</p>}
+        <button className="btn btn-primary btn-full" onClick={requestMicrophone} disabled={permissionBusy}>{permissionBusy ? 'Waiting for browser permission…' : 'Allow microphone'}</button>
+        <button className="btn btn-quiet btn-full" onClick={() => setSetupOpen(false)}>Browse contacts first</button>
+        <small>Calls stay unavailable until microphone access is allowed. Notifications are optional and can be enabled separately.</small>
+      </section></div>}
+
       {/* Error Banner */}
       {errorMessage && (
         <div
           style={{
             background: '#1f1f1f',
-            border: '1px solid rgba(255, 255, 255, 0.25)',
+            border: '0',
             borderRadius: '8px',
             padding: '0.85rem 1rem',
             color: '#ffffff',
@@ -871,7 +714,7 @@ export const App: React.FC = () => {
 
       {/* Feedback Toast */}
       {toastMessage && (
-        <div className="toast-banner">
+        <div className="toast-banner" role="status">
           <Check size={16} color="#249c6f" />
           <span>{toastMessage}</span>
         </div>
@@ -888,10 +731,13 @@ export const App: React.FC = () => {
               </button>
             </div>
             <p style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '1.25rem' }}>
-              Your browser has saved your private phone book. Each contact represents an encrypted, dedicated calling tunnel.
+              Names and invite secrets are saved only in this browser. Anyone using this browser profile can access them. Clearing site data removes your contacts.
             </p>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <button className="btn btn-secondary btn-full" onClick={() => { setIsSettingsOpen(false); setSetupOpen(true); }}><Mic size={16} /> Microphone permissions</button>
+              {isPushEnabled && <button className="btn btn-secondary btn-full" onClick={disablePush}><Bell size={16} /> Disable background alerts</button>}
+              <a className="btn btn-secondary btn-full" href="/privacy.html">Read privacy & storage details</a>
               <button className="btn btn-secondary btn-full" onClick={handleCopyActiveInvite}>
                 {copiedLink ? <Check size={16} color="#249c6f" /> : <Copy size={16} />}
                 {copiedLink ? 'Invite Link Copied' : 'Share Active Line Invite'}
@@ -923,7 +769,7 @@ export const App: React.FC = () => {
                 height: '68px',
                 borderRadius: '50%',
                 background: 'rgba(36, 156, 111, 0.15)',
-                border: '2px solid #249c6f',
+                border: '0',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -1009,7 +855,7 @@ export const App: React.FC = () => {
                 style={{ padding: '0.55rem', fontSize: '0.85rem', fontWeight: 600 }}
                 onClick={() => setAddContactTab('create')}
               >
-                <Plus size={15} /> Create Route
+                <Plus size={15} /> Create connection
               </button>
               <button
                 className={`btn ${addContactTab === 'paste' ? 'btn-primary' : 'btn-secondary'}`}
@@ -1175,267 +1021,49 @@ export const App: React.FC = () => {
 
       {/* VIEW B: PERMANENT PHONE BOOK & SPEED-DIAL HOTLINE */}
       {hasSavedLine && (callState === 'waiting' || callState === 'idle') && (
-        <div style={{ maxWidth: '640px', margin: '0 auto', width: '100%' }}>
-          {/* ACTIVE CONTACT HERO SPEED-DIAL CARD */}
-          {activeContact && (
-            <div className="dedicated-line-card">
-              <div className="line-badge">
-                <ShieldCheck size={14} />
-                <span>Active Direct Hotline</span>
+        <main className="workspace">
+          <div className="workspace-grid">
+            <section className="phonebook-panel" aria-labelledby="phonebook-title">
+              <div className="phonebook-header">
+                <div><span className="eyebrow">YOUR PEOPLE</span><h2 id="phonebook-title">Phone Book <span>{savedLines.length}</span></h2></div>
+                <button className="btn btn-add" onClick={() => setIsAddContactModalOpen(true)} aria-label="Add Contact"><Plus size={19} /><span>Add contact</span></button>
               </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.95rem', margin: '0.75rem 0' }}>
-                <div className="contact-avatar active" style={{ width: '52px', height: '52px', fontSize: '1.35rem' }}>
-                  {activeContact.name.charAt(0).toUpperCase()}
-                  {isPeerOnline && (
-                    <span
-                      style={{
-                        position: 'absolute',
-                        bottom: '1px',
-                        right: '1px',
-                        width: '13px',
-                        height: '13px',
-                        borderRadius: '50%',
-                        background: '#249c6f',
-                        border: '2px solid #181818',
-                      }}
-                    />
-                  )}
-                </div>
-                <div style={{ textAlign: 'left', minWidth: 0, flex: 1, maxWidth: '280px' }}>
-                  <h2 style={{ fontSize: '1.4rem', fontWeight: 700, color: '#ffffff', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {activeContact.name}
-                  </h2>
-                  <div
-                    style={{
-                      fontSize: '0.8rem',
-                      color: isPeerOnline ? '#249c6f' : 'rgba(255, 255, 255, 0.55)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.35rem',
-                      marginTop: '0.2rem',
-                    }}
-                  >
-                    <span className={`status-dot ${isPeerOnline ? '' : 'offline'}`} />
-                    <span>{isPeerOnline ? 'Partner Online Now' : 'Standby • 24/7 Ready'}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Background Ringing Push Notification Compact Bar */}
-              <div
-                style={{
-                  background: isPushEnabled ? 'rgba(36, 156, 111, 0.1)' : 'rgba(255, 255, 255, 0.04)',
-                  border: `1px solid ${isPushEnabled ? 'rgba(36, 156, 111, 0.4)' : 'rgba(255, 255, 255, 0.1)'}`,
-                  borderRadius: '8px',
-                  padding: '0.5rem 0.8rem',
-                  marginBottom: '0.85rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  textAlign: 'left',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Bell size={15} color={isPushEnabled ? '#249c6f' : 'rgba(255, 255, 255, 0.6)'} />
-                  <div>
-                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#ffffff' }}>
-                      {isPushEnabled ? 'Background Ringing Active' : 'Background Call Ringing'}
-                    </div>
-                    <div style={{ fontSize: '0.7rem', color: 'rgba(255, 255, 255, 0.5)' }}>
-                      {isPushEnabled ? 'Phone rings even when browser is closed' : 'Enable to ring phone when app is closed'}
-                    </div>
-                  </div>
-                </div>
-                {!isPushEnabled && (
-                  <button
-                    className="btn btn-primary"
-                    style={{ fontSize: '0.72rem', padding: '0.3rem 0.65rem' }}
-                    onClick={handleEnablePush}
-                  >
-                    Enable
+              <div className="search-input-wrapper"><Search size={18} /><input className="input-field" type="search" aria-label="Search contacts" placeholder="Search your people" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
+              <div className="directory-label"><span>ALL CONNECTIONS</span><span>Saved on this device</span></div>
+              <div className="contacts-list" role="list" aria-label="Your contacts">
+                {filteredContacts.length === 0 && <div className="empty-search"><Search size={26} /><p>No one by that name.</p><span>Try another name or add a new connection.</span></div>}
+                {filteredContacts.map(contact => <div role="listitem" className={`contact-card ${contact.id === lineId ? 'active' : ''}`} key={contact.id}>
+                  <button className="contact-select" onClick={() => handleSwitchLine(contact)} aria-pressed={contact.id === lineId}>
+                    <span className="contact-avatar">{contact.name.charAt(0).toUpperCase()}</span>
+                    <span className="contact-details"><span className="contact-name">{contact.name}</span><span className="contact-substatus"><span className={`status-dot ${onlineLines[contact.id] ? '' : 'offline'}`} />{!isSecureLine(contact.id, contact.passcode) ? 'Upgrade connection' : onlineLines[contact.id] ? 'Available to call' : 'Offline · invite to connect'}</span></span>
                   </button>
-                )}
+                  <button className="btn contact-call" title={`Call ${contact.name}`} aria-label={`Call ${contact.name}`} onClick={e => handleCallSavedLine(contact, e)}><Phone size={18} /></button>
+                </div>)}
               </div>
-
-              {/* Call Partner Button - Satisfies verifyCall.js */}
-              <button
-                className="btn btn-primary btn-full"
-                style={{ padding: '0.9rem', fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.75rem' }}
-                onClick={handleRingPartner}
-              >
-                <PhoneCall size={20} /> Call Partner
-              </button>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.5rem' }}>
-                <button
-                  className="btn btn-secondary"
-                  style={{ fontSize: '0.86rem', padding: '0.65rem' }}
-                  onClick={() => setShareContact(activeContact)}
-                >
-                  <Share2 size={16} /> Share Connection Link
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  style={{ padding: '0.65rem' }}
-                  onClick={() => {
-                    setLineId(activeContact.id);
-                    setIsQrOpen(true);
-                  }}
-                  title="Show QR Code"
-                >
-                  <QrCode size={18} />
-                </button>
+              <div className="directory-tip"><Lock size={15} /><span>No account. No address-book upload.<br /><strong>Just the people you choose.</strong></span></div>
+            </section>
+            {activeContact && <section className="conversation-panel" aria-label="Selected connection">
+              <div className="conversation-top"><span><span className="status-dot" /> PRIVATE VOICE</span><button className="btn btn-quiet" title="Delete Contact" onClick={e => handleDeleteLine(activeContact.id, e)}><Trash2 size={17} /><span>Remove</span></button></div>
+              <div className="conversation-center">
+                <div className="hero-avatar">{activeContact.name.charAt(0).toUpperCase()}</div>
+                <h2>{activeContact.name}</h2>
+                <p>{isPeerOnline ? 'They’re here. Say hello.' : 'A familiar voice is worth making time for.'}</p>
+                {!isSecureLine(activeContact.id, activeContact.passcode) ? <button className="btn btn-add" onClick={upgradeLine}><RefreshCw size={18} /> Upgrade & share new link</button> : <>
+                  <button className="btn btn-primary main-call" onClick={handleRingPartner}><Phone size={21} /> Call Partner</button>
+                  <span className="call-hint">{isPeerOnline ? 'Available now' : 'Share your invite to get connected'}</span>
+                </>}
               </div>
-            </div>
-          )}
-
-          {/* PHONE BOOK DIRECTORY */}
-          <div className="glass-panel phonebook-panel" style={{ padding: '1.25rem 1.35rem', marginBottom: '1.5rem' }}>
-            <div className="phonebook-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <BookUser size={19} color="#249c6f" />
-                <span style={{ fontWeight: 700, fontSize: '1.02rem', color: '#ffffff' }}>
-                  Phone Book
-                </span>
-                <span
-                  style={{
-                    fontSize: '0.7rem',
-                    padding: '0.12rem 0.45rem',
-                    background: 'rgba(255, 255, 255, 0.08)',
-                    borderRadius: '12px',
-                    color: 'rgba(255, 255, 255, 0.7)',
-                    fontWeight: 600,
-                  }}
-                >
-                  {savedLines.length} {savedLines.length === 1 ? 'Contact' : 'Contacts'}
-                </span>
+              <div className="connection-tools">
+                <button className="btn btn-share" onClick={() => setShareContact(activeContact)}><Share2 size={18} /> Share invite</button>
+                <button className="btn btn-secondary" title="Show QR Code" onClick={() => setIsQrOpen(true)}><QrCode size={18} /> QR code</button>
               </div>
-
-              <button
-                className="btn btn-primary"
-                style={{ fontSize: '0.8rem', padding: '0.4rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                onClick={() => setIsAddContactModalOpen(true)}
-              >
-                <Plus size={15} /> Add Contact
-              </button>
-            </div>
-
-            {/* Search Bar if multiple contacts */}
-            {savedLines.length > 1 && (
-              <div className="phonebook-search-row">
-                <div className="search-input-wrapper">
-                  <Search size={15} />
-                  <input
-                    type="text"
-                    className="input-field"
-                    placeholder="Search contacts..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Contacts List */}
-            <div className="contacts-list">
-              {filteredContacts.map((contact) => {
-                const isActive = contact.id === lineId;
-                return (
-                  <div
-                    key={contact.id}
-                    className={`contact-card ${isActive ? 'active' : ''}`}
-                    onClick={() => !isActive && handleSwitchLine(contact)}
-                    style={{ cursor: isActive ? 'default' : 'pointer' }}
-                  >
-                    <div className="contact-info-block">
-                      <div className={`contact-avatar ${isActive ? 'active' : ''}`}>
-                        {contact.name.charAt(0).toUpperCase()}
-                        {isActive && isPeerOnline && (
-                          <span
-                            style={{
-                              position: 'absolute',
-                              bottom: '0',
-                              right: '0',
-                              width: '11px',
-                              height: '11px',
-                              borderRadius: '50%',
-                              background: '#249c6f',
-                              border: '2px solid #181818',
-                            }}
-                          />
-                        )}
-                      </div>
-                      <div className="contact-details">
-                        <div className="contact-name">{contact.name}</div>
-                        <div className="contact-substatus">
-                          <span
-                            style={{
-                              width: '7px',
-                              height: '7px',
-                              borderRadius: '50%',
-                              background: isActive && isPeerOnline ? '#249c6f' : 'rgba(255, 255, 255, 0.3)',
-                              display: 'inline-block',
-                              flexShrink: 0,
-                            }}
-                          />
-                          <span>{isActive ? (isPeerOnline ? 'Online' : 'Standby') : 'Tap to switch'}</span>
-                          {isActive && (
-                            <span
-                              style={{
-                                fontSize: '0.62rem',
-                                padding: '0.1rem 0.4rem',
-                                background: 'rgba(36, 156, 111, 0.25)',
-                                color: '#34d399',
-                                border: '1px solid rgba(36, 156, 111, 0.5)',
-                                borderRadius: '4px',
-                                fontWeight: 700,
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.03em',
-                                marginLeft: '0.25rem',
-                              }}
-                            >
-                              Active
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="contact-actions">
-                      <button
-                        className="btn btn-primary btn-call"
-                        onClick={(e) => handleCallSavedLine(contact, e)}
-                        title={`Call ${contact.name}`}
-                      >
-                        <Phone size={13} /> Call
-                      </button>
-
-                      <button
-                        className="btn btn-secondary btn-action-icon"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setShareContact(contact);
-                        }}
-                        title="Share Connection Link"
-                      >
-                        <Share2 size={13} />
-                      </button>
-
-                      <button
-                        className="btn btn-danger btn-action-icon"
-                        onClick={(e) => handleDeleteLine(contact.id, e)}
-                        title="Delete Contact"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+              <div className="permission-row"><Bell size={18} /><div><strong>{isPushEnabled ? 'Call alerts are on' : 'Don’t miss a hello.'}</strong><p>{isPushEnabled ? 'Temporary delivery routing · device limits apply' : 'Turn on optional background call alerts.'}</p></div><button className="btn btn-alert" onClick={isPushEnabled ? disablePush : handleEnablePush}>{isPushEnabled ? 'Turn off' : 'Enable'}</button></div>
+            </section>}
           </div>
-        </div>
+          {!micReady && <div className="mic-notice"><Mic size={17} /><span>Microphone access is required to make and answer calls.</span><button className="btn btn-secondary" onClick={() => setSetupOpen(true)}>Set up microphone</button></div>}
+          {localStore.isUnavailable() && <p role="alert" className="mic-notice">Browser storage is unavailable. Contacts will be lost when you leave. Enable site storage to keep them.</p>}
+          <footer className="workspace-footer"><span><Lock size={13} /> Your contacts stay in this browser.</span><nav aria-label="Learn about ImiCall"><a href="/about.html">Why ImiCall</a><a href="/privacy.html">Privacy, explained</a><button onClick={() => setIsSettingsOpen(true)}>Settings</button></nav></footer>
+        </main>
       )}
 
       {/* VIEW C: OUTGOING CALLING (Caller Screen) */}
@@ -1447,7 +1075,7 @@ export const App: React.FC = () => {
               height: '80px',
               borderRadius: '50%',
               background: '#181818',
-              border: '2px solid #249c6f',
+              border: '0',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -1481,7 +1109,7 @@ export const App: React.FC = () => {
                 height: '84px',
                 borderRadius: '50%',
                 background: 'rgba(36, 156, 111, 0.15)',
-                border: '2px solid #249c6f',
+                border: '0',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -1659,7 +1287,7 @@ export const App: React.FC = () => {
               alignItems: 'center',
               justifyContent: 'space-between',
               background: '#181818',
-              border: '1px solid #282828',
+              border: '0',
               borderRadius: '10px',
               padding: '0.6rem 0.85rem',
               marginBottom: '1.25rem',
@@ -1763,7 +1391,7 @@ export const App: React.FC = () => {
             onClose={() => setIsDiagnosticsOpen(false)}
             stats={networkStats}
             profile={selectedProfile}
-            isE2eeActive={true}
+            isE2eeActive={callState === 'connected' && isSecureLine(lineId, passcode)}
             roomId={lineId}
           />
         )}

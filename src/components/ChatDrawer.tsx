@@ -39,7 +39,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
       <div className="chat-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <MessageSquare size={18} color="#249c6f" />
-          <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#ffffff' }}>Emergency Text Channel</h3>
+          <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#ffffff' }}>In-call messages</h3>
         </div>
         <button className="btn btn-secondary" style={{ padding: '0.35rem' }} onClick={onClose}>
           <X size={16} color="#ffffff" />
@@ -49,7 +49,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
       <div className="chat-messages">
         {messages.length === 0 ? (
           <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.8rem', textAlign: 'center', margin: 'auto' }}>
-            Zero-bandwidth text fallback. Messages travel directly peer-to-peer via WebRTC DataChannel.
+            Messages travel over the encrypted call connection. They are cleared when the call ends.
           </div>
         ) : (
           messages.map((msg) => (
@@ -77,10 +77,12 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
           className="input-field"
           style={{ fontSize: '0.85rem', padding: '0.6rem 0.8rem' }}
           placeholder="Type message..."
+          aria-label="Message"
+          maxLength={4000}
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
         />
-        <button type="submit" className="btn btn-primary" style={{ padding: '0.6rem 0.9rem' }}>
+        <button aria-label="Send message" type="submit" className="btn btn-primary" style={{ padding: '0.6rem 0.9rem' }}>
           <Send size={16} />
         </button>
       </form>

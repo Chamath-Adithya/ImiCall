@@ -1,0 +1,62 @@
+import puppeteer from 'puppeteer-core';
+import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+const base = process.env.IMICALL_TEST_URL || 'http://localhost:8080';
+const browser = await puppeteer.launch({executablePath:'/usr/bin/google-chrome',args:['--no-sandbox','--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream','--autoplay-policy=no-user-gesture-required']});
+const errors=[];
+try {
+ const contextA=await browser.createBrowserContext(),contextB=await browser.createBrowserContext();
+ await contextA.overridePermissions(base,['microphone']); await contextB.overridePermissions(base,['microphone']);
+ const a=await contextA.newPage(),b=await contextB.newPage();
+ for (const page of [a,b]) await page.evaluateOnNewDocument(() => {
+   window.__pcs=[];window.__streams=[];
+   const PC=window.RTCPeerConnection;
+   window.RTCPeerConnection=new Proxy(PC,{construct(target,args){const pc=new target(...args);window.__pcs.push(pc);return pc;}});
+   const gum=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+   navigator.mediaDevices.getUserMedia=async constraints=>{const stream=await gum(constraints);window.__streams.push(stream);return stream;};
+ });
+ for (const page of [a,b]) page.on('pageerror',e=>errors.push(e.message));
+ await a.setViewport({width:1440,height:1000});
+ await a.goto(base);await a.waitForSelector('.phonebook-header');
+ const line=await a.evaluate(()=>JSON.parse(localStorage.getItem('imicall_saved_lines_list_v2'))[0]);
+ assert.match(line.passcode,/^[a-f0-9]{64}$/);
+ await b.goto(`${base}/#connect=${line.id}&pin=${line.passcode}&from=Alex`);
+ await b.waitForFunction(()=>document.body.innerText.includes('Connect & Save'));
+ await b.evaluate(()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Connect & Save')).click());
+ await a.waitForFunction(()=>document.body.innerText.includes('Available now'));
+ await a.click('.main-call');
+ await b.waitForFunction(()=>document.body.innerText.includes('Incoming Call...'));
+ await b.evaluate(()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Answer').click());
+ await Promise.all([a,b].map(p=>p.waitForFunction(()=>document.body.innerText.includes('Call Active'),{timeout:20000})));
+ console.log('Two browsers connected with private v2 invites.');
+ await new Promise(r=>setTimeout(r,1500));
+ const bytes=await b.evaluate(async()=>{let n=0;for(const pc of window.__pcs){const stats=await pc.getStats();stats.forEach(s=>{if(s.type==='inbound-rtp')n+=s.bytesReceived||0;});}return n;});assert.ok(bytes>0,'Received actual media packets');
+ await a.click('[title="End Call"]');
+ await Promise.all([a,b].map(p=>p.waitForSelector('.phonebook-panel')));
+ for (const page of [a,b]) assert.equal(await page.evaluate(()=>window.__streams.every(s=>s.getTracks().every(t=>t.readyState==='ended'))),true);
+ console.log('Media packets received; both returned to Phone Book and released microphones.');
+ // Calling a contact must ring even while they have a different contact selected.
+ const other={id:`line-${randomBytes(16).toString('hex')}`,passcode:randomBytes(32).toString('hex'),name:'Another connection',createdAt:Date.now()};
+ await a.evaluate(other=>{const key='imicall_saved_lines_list_v2';localStorage.setItem(key,JSON.stringify([...JSON.parse(localStorage.getItem(key)),other]));localStorage.setItem('imicall_active_line_id_v2',other.id);},other);
+ await a.reload();await a.waitForFunction(()=>document.querySelector('.conversation-center h2')?.textContent==='Another connection');
+ await b.waitForFunction(()=>document.body.innerText.includes('Available now'));
+ await b.click('.main-call');await a.waitForFunction(()=>document.body.innerText.includes('Incoming Call...'));
+ await a.evaluate(()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Decline').click());await b.waitForSelector('.phonebook-panel');
+ console.log('Background contact receives incoming call while another is selected.');
+ await a.click('[title="Show QR Code"]');await a.waitForSelector('.modal-card img[alt="Room QR Code"]');
+ await a.evaluate(()=>document.querySelector('.modal-backdrop').click());
+ // A fresh invitation must not expose secrets to requests or alter source APIs.
+ await a.type('[aria-label="Search contacts"]','missing-contact');await a.waitForSelector('.empty-search');
+ await a.$eval('[aria-label="Search contacts"]',e=>{const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(e,'');e.dispatchEvent(new Event('input',{bubbles:true}));});
+ for(const width of [320,390,768,1440]) {await a.setViewport({width,height:1000});assert.equal(await a.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`overflow at ${width}`);}
+ assert.deepEqual(errors,[]);
+ const deniedContext=await browser.createBrowserContext();await deniedContext.overridePermissions(base,[]);const denied=await deniedContext.newPage();
+ await denied.evaluateOnNewDocument(()=>{navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException('Denied for permission regression check','NotAllowedError');};});
+ await denied.goto(base);await denied.waitForSelector('.permission-setup');await denied.click('.permission-setup .btn-primary');await denied.waitForSelector('.permission-error');
+ console.log('Search, responsive widths, simulated denied microphone and no page errors verified.');
+ // Long lists must scroll in their own directory.
+ const many=Array.from({length:30},(_,i)=>({id:`line-${randomBytes(16).toString('hex')}`,passcode:randomBytes(32).toString('hex'),name:`Contact ${i+1}`,createdAt:Date.now()}));
+ await denied.evaluate(lines=>localStorage.setItem('imicall_saved_lines_list_v2',JSON.stringify(lines)),many);await denied.reload();await denied.waitForSelector('.contacts-list');
+ assert.equal(await denied.$eval('.contacts-list',e=>e.scrollHeight>e.clientHeight),true);
+ console.log('30-contact directory scroll verified.');
+} finally { await browser.close(); }

@@ -1,58 +1,30 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { WebSocketServer, WebSocket } from 'ws';
-
-describe('Signaling Protocol & Room Pairing', () => {
-  let wss: WebSocketServer;
-  const PORT = 8089;
-  const rooms = new Map<string, Set<WebSocket>>();
-
-  beforeAll(async () => {
-    wss = new WebSocketServer({ port: PORT });
-    wss.on('connection', (ws) => {
-      let currentRoom: string | null = null;
-      ws.on('message', (data) => {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === 'join') {
-          currentRoom = msg.roomId;
-          if (!rooms.has(currentRoom!)) rooms.set(currentRoom!, new Set());
-          const clients = rooms.get(currentRoom!)!;
-          clients.add(ws);
-          ws.send(JSON.stringify({ type: 'joined', isInitiator: clients.size === 1 }));
-          if (clients.size === 2) {
-            for (const client of clients) {
-              if (client !== ws) client.send(JSON.stringify({ type: 'peer-joined' }));
-            }
-          }
-        }
-      });
-    });
-  });
-
-  afterAll(() => {
-    wss.close();
-  });
-
-  it('should pair two clients in the same room as initiator and peer', async () => {
-    const ws1 = new WebSocket(`ws://localhost:${PORT}`);
-    const ws2 = new WebSocket(`ws://localhost:${PORT}`);
-
-    await Promise.all([
-      new Promise((res) => ws1.on('open', res)),
-      new Promise((res) => ws2.on('open', res)),
-    ]);
-
-    const msg1Promise = new Promise<any>((res) => ws1.on('message', (d) => res(JSON.parse(d.toString()))));
-    ws1.send(JSON.stringify({ type: 'join', roomId: 'test-room-1' }));
-    const msg1 = await msg1Promise;
-    expect(msg1.type).toBe('joined');
-    expect(msg1.isInitiator).toBe(true);
-
-    const peerJoinedPromise = new Promise<any>((res) => ws1.on('message', (d) => res(JSON.parse(d.toString()))));
-    ws2.send(JSON.stringify({ type: 'join', roomId: 'test-room-1' }));
-    const peerJoined = await peerJoinedPromise;
-    expect(peerJoined.type).toBe('peer-joined');
-
-    ws1.close();
-    ws2.close();
-  });
+import { beforeAll, afterAll, describe, expect, it } from 'vitest';
+import { spawn, ChildProcess } from 'node:child_process';
+import { WebSocket } from 'ws';
+import { randomBytes } from 'node:crypto';
+const port = 18189, base = `http://localhost:${port}`;
+let server: ChildProcess;
+const sockets: WebSocket[] = [];
+const next = (ws: WebSocket) => new Promise<any>(resolve => ws.once('message', d => resolve(JSON.parse(d.toString()))));
+async function socket() { const ws = new WebSocket(`ws://localhost:${port}/ws`); sockets.push(ws); await new Promise(r => ws.once('open', r)); return ws; }
+beforeAll(async () => { server = spawn(process.execPath, ['server/signaling.js'], { env: { ...process.env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] }); await new Promise<void>((resolve, reject) => { server.stdout!.once('data', () => resolve()); server.once('error', reject); }); });
+afterAll(() => { sockets.forEach(ws => ws.terminate()); server.kill(); });
+describe('Actual production relay', () => {
+ it('rejects unauthenticated APIs and provides browser security headers', async () => {
+   const r = await fetch(base); expect(r.headers.get('x-content-type-options')).toBe('nosniff'); expect(r.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+   expect((await fetch(base + '/api/deleted-connections')).status).toBe(404);
+   expect((await fetch(base + '/api/push-subscribe', { method: 'POST', body: JSON.stringify({ roomId: 'nope' }) })).status).toBe(403);
+   expect((await fetch(base + '/api/config', { headers: { Origin: 'https://evil.invalid' } })).status).toBe(403);
+ });
+ it('pairs only authenticated room members and rejects duplicate joins and third peers', async () => {
+   const roomId = 'line-' + randomBytes(16).toString('hex'), auth = randomBytes(32).toString('hex');
+   const join = { type: 'join', roomId, auth, deviceId: randomBytes(16).toString('hex') };
+   const a = await socket(); let reply = next(a); a.send(JSON.stringify(join)); expect((await reply).type).toBe('joined');
+   const bad = await socket(); const closed = new Promise(r => bad.once('close', r)); bad.send(JSON.stringify({ ...join, auth: '0'.repeat(64) })); await closed;
+   const b = await socket(); reply = next(b); b.send(JSON.stringify({ ...join, deviceId: randomBytes(16).toString('hex') })); expect((await reply).peersCount).toBe(2);
+   const third = await socket(); reply = next(third); third.send(JSON.stringify(join)); expect((await reply).type).toBe('room-full');
+   reply = next(b); a.send(JSON.stringify({ type: 'offer', payload: { iv: Array(12).fill(1), data: 'encrypted' } })); expect((await reply).payload.data).toBe('encrypted');
+   const duplicateClosed = new Promise(r => a.once('close', r)); a.send(JSON.stringify(join)); await duplicateClosed;
+   b.close();
+ });
 });

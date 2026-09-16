@@ -1,14 +1,16 @@
-import { SignalProfile, NetworkStats, ChatMessage, CallState, REQUIRED_PASSCODE, hashPasscode } from './types';
+import { SignalProfile, NetworkStats, ChatMessage, CallState } from './types';
 import { tuneSdpForLowBandwidth } from './sdpTuner';
-import { AudioE2EE } from './e2ee';
+import { PrivateSignaling, lineAuth } from './privateLine';
 import { StatsMonitor } from './statsMonitor';
 import { AudioManager } from './audioManager';
 import { SoundManager } from './soundManager';
+import { runtimeConfig } from './runtimeConfig';
+import { deviceId } from './pushManager';
 
 export interface WebRTCClientOptions {
   signalingUrl: string;
   roomId: string;
-  passcode: string; // Mandatory PIN (2023)
+  passcode: string; // Random 256-bit invitation secret
   profile: SignalProfile;
   iceServers?: RTCIceServer[];
 }
@@ -17,7 +19,17 @@ export class WebRTCClient {
   private pc: RTCPeerConnection | null = null;
   private ws: WebSocket | null = null;
   private dataChannel: RTCDataChannel | null = null;
-  private e2ee: AudioE2EE = new AudioE2EE();
+  private secure: PrivateSignaling;
+  private auth = '';
+  private closed = false;
+  private retry = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private ringTimer: ReturnType<typeof setTimeout> | null = null;
+  private sendQueue = Promise.resolve();
+  private receiveQueue = Promise.resolve();
+  private candidates: RTCIceCandidateInit[] = [];
+  private microphonePending = false;
+  private callGeneration = 0;
   private statsMonitor: StatsMonitor | null = null;
   public audioManager: AudioManager = new AudioManager();
   public soundManager: SoundManager = new SoundManager();
@@ -40,6 +52,7 @@ export class WebRTCClient {
 
   constructor(options: WebRTCClientOptions) {
     this.options = options;
+    this.secure = new PrivateSignaling(options.roomId);
     this.currentProfile = options.profile;
   }
 
@@ -60,8 +73,9 @@ export class WebRTCClient {
     try {
       this.state = 'waiting';
 
-      // Initialize Passcode-based E2EE using PIN 2023
-      await this.e2ee.setPassphrase(`imicall-e2ee-salt-${this.options.passcode}`);
+      await this.secure.init(this.options.passcode);
+      this.auth = await lineAuth(this.options.roomId, this.options.passcode);
+      if (this.closed) return;
 
       // Connect to signaling server in standby mode
       this.connectSignaling();
@@ -73,40 +87,44 @@ export class WebRTCClient {
   }
 
   private connectSignaling() {
-    let wsUrl = this.options.signalingUrl;
-    if (wsUrl.includes('/ws')) {
-      wsUrl += (wsUrl.includes('?') ? '&' : '?') + `room=${encodeURIComponent(this.options.roomId)}`;
-    }
-
-    this.ws = new WebSocket(wsUrl);
-
+    this.ws = new WebSocket(this.options.signalingUrl);
     this.ws.onopen = () => {
-      this.ws?.send(
-        JSON.stringify({
-          type: 'join',
-          roomId: this.options.roomId,
-        })
-      );
+      this.retry = 0;
+      this.ws?.send(JSON.stringify({ type: 'join', roomId: this.options.roomId, auth: this.auth, deviceId: deviceId() }));
     };
-
-    this.ws.onmessage = async (event) => {
-      try {
+    this.ws.onmessage = (event) => {
+      this.receiveQueue = this.receiveQueue.then(async () => {
         const msg = JSON.parse(event.data);
+        if (!['joined', 'peer-joined', 'peer-left', 'room-full', 'error'].includes(msg.type)) {
+          msg.payload = await this.secure.open(msg.type, msg.payload);
+        }
         await this.handleSignalingMessage(msg);
-      } catch (e) {
-        console.error('[WebRTC] Signal parsing error:', e);
-      }
+      }).catch(() => { this.onError?.('A connection message could not be verified. Please reconnect if the call does not continue.'); });
     };
 
     this.ws.onerror = (err) => {
       console.warn('[WebRTC] Signaling error:', err);
     };
 
-    this.ws.onclose = () => {
-      if (this.state === 'connected') {
-        this.setState('reconnecting');
-      }
+    this.ws.onclose = (event) => {
+      if (this.closed) return;
+      this.peerInRoom = false;
+      this.onPeerStatusChange?.(false);
+      this.soundManager.stopAll();
+      this.cleanupCallSession();
+      this.setState('waiting');
+      if (event.code === 1008) { this.onError?.('This connection is unavailable or already open on two devices. Close the other tab and reload.'); return; }
+      this.retryTimer = setTimeout(() => this.connectSignaling(), Math.min(30000, 1000 * 2 ** this.retry++) + Math.random() * 500);
     };
+  }
+
+  private sendSignal(type: string, payload: unknown = null) {
+    this.sendQueue = this.sendQueue.then(async () => {
+      const envelope = await this.secure.seal(type, payload);
+      if (this.ws?.readyState !== WebSocket.OPEN) throw new Error('Connection unavailable. Please wait and try again.');
+      this.ws.send(JSON.stringify({ type, payload: envelope }));
+    }).catch((error) => { this.onError?.(error.message); });
+    return this.sendQueue;
   }
 
   private async handleSignalingMessage(msg: any) {
@@ -124,20 +142,26 @@ export class WebRTCClient {
         break;
 
       case 'call-ring':
+        if (this.state !== 'waiting') { await this.sendSignal('call-decline'); break; }
+        this.armRingTimeout();
         // Partner is calling us! Trigger incoming ring
         this.soundManager.startIncomingRing();
         this.setState('ringing-incoming');
         break;
 
       case 'call-accept':
+        if (this.state !== 'ringing-outgoing') break;
+        this.clearRingTimeout();
         // Partner answered our call! Stop ringback and initiate WebRTC offer
         this.soundManager.stopAll();
         this.setState('connecting');
+        this.isInitiator = true;
         await this.initiatePeerConnection();
         await this.createOffer();
         break;
 
       case 'call-decline':
+        this.cleanupCallSession();
         // Partner declined call
         this.soundManager.stopAll();
         this.setState('waiting');
@@ -145,34 +169,35 @@ export class WebRTCClient {
         break;
 
       case 'call-cancel':
+        this.cleanupCallSession();
         // Caller hung up before answer
         this.soundManager.stopAll();
         this.setState('waiting');
         break;
 
       case 'offer':
+        if (this.state !== 'connecting') break;
         this.soundManager.stopAll();
         this.setState('connecting');
+        this.isInitiator = false;
         await this.initiatePeerConnection();
         await this.handleOffer(msg.payload);
         break;
 
       case 'answer':
+        if (this.state !== 'connecting') break;
         await this.handleAnswer(msg.payload);
         break;
 
       case 'candidate':
-        if (this.pc && msg.payload) {
-          try {
-            await this.pc.addIceCandidate(new RTCIceCandidate(msg.payload));
-          } catch (e) {
-            console.warn('[WebRTC] Candidate error:', e);
-          }
+        if (msg.payload && ['connecting', 'connected'].includes(this.state)) {
+          if (this.pc?.remoteDescription) await this.pc.addIceCandidate(msg.payload);
+          else if (this.candidates.length < 100) this.candidates.push(msg.payload);
         }
         break;
 
       case 'profile-change':
-        if (msg.payload && msg.payload.profile) {
+        if (msg.payload && ['balanced', 'extreme', 'hd'].includes(msg.payload.profile)) {
           this.currentProfile = msg.payload.profile;
           if (this.onProfileChange) this.onProfileChange(this.currentProfile);
         }
@@ -202,6 +227,13 @@ export class WebRTCClient {
         }
         break;
 
+      case 'error':
+        this.soundManager.stopAll();
+        this.cleanupCallSession();
+        this.onError?.(msg.message || 'Connection unavailable.');
+        this.setState('waiting');
+        break;
+
       case 'room-full':
         this.setState('error');
         if (this.onError) this.onError('Room is already full (maximum 2 participants).');
@@ -209,46 +241,40 @@ export class WebRTCClient {
     }
   }
 
-  notifyContactDeleted(roomId: string) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
-        type: 'contact-deleted',
-        roomId,
-        payload: { roomId },
-      }));
-    }
+  private clearRingTimeout() {
+    if (this.ringTimer) clearTimeout(this.ringTimer);
+    this.ringTimer = null;
   }
+  private armRingTimeout() {
+    this.clearRingTimeout();
+    this.ringTimer = setTimeout(() => { this.cancelOutgoingCall(); this.onError?.('No answer. Your partner may be offline. Try again later.'); }, 90000);
+  }
+  notifyContactDeleted(_roomId: string) { void this.sendSignal('contact-deleted'); }
 
-  /**
-   * Caller initiates the ring to partner with PIN 2023 check.
-   */
   async ringPartner(enteredPin: string): Promise<boolean> {
-    if (enteredPin.trim() !== REQUIRED_PASSCODE) {
-      if (this.onError) this.onError(`Invalid Passcode! Secret passcode "${REQUIRED_PASSCODE}" is required to place call.`);
+    if (this.microphonePending || enteredPin !== this.options.passcode || this.ws?.readyState !== WebSocket.OPEN || this.state !== 'waiting') {
+      this.onError?.('Connection is not ready. Wait a moment and try again.');
       return false;
     }
-
+    const generation = this.callGeneration;
+    this.microphonePending = true;
     try {
       if (!this.audioManager.getLocalStream()) {
         await this.audioManager.initLocalAudio();
       }
     } catch (e: any) {
+      this.microphonePending = false;
       console.error('[WebRTC] Microphone init error:', e);
       if (this.onError) this.onError('Microphone access is required to place a call.');
       return false;
     }
 
-    const pinHash = await hashPasscode(enteredPin);
+    this.microphonePending = false;
+    if (generation !== this.callGeneration || this.closed) { this.audioManager.cleanup(); return false; }
     this.soundManager.startOutgoingRingback();
     this.setState('ringing-outgoing');
-
-    this.ws?.send(
-      JSON.stringify({
-        type: 'call-ring',
-        roomId: this.options.roomId,
-        payload: { pinHash },
-      })
-    );
+    this.armRingTimeout();
+    await this.sendSignal('call-ring');
 
     return true;
   }
@@ -257,30 +283,27 @@ export class WebRTCClient {
    * Callee accepts the incoming call by verifying PIN 2023.
    */
   async acceptIncomingCall(enteredPin: string): Promise<boolean> {
-    if (enteredPin.trim() !== REQUIRED_PASSCODE) {
-      if (this.onError) this.onError(`Invalid Passcode! Secret passcode "${REQUIRED_PASSCODE}" is required to answer.`);
-      return false;
-    }
-
+    if (this.microphonePending || enteredPin !== this.options.passcode || this.state !== 'ringing-incoming' || this.ws?.readyState !== WebSocket.OPEN) return false;
+    const generation = this.callGeneration;
+    this.microphonePending = true;
     try {
       if (!this.audioManager.getLocalStream()) {
         await this.audioManager.initLocalAudio();
       }
     } catch (e: any) {
+      this.microphonePending = false;
       console.error('[WebRTC] Microphone init error on answer:', e);
       if (this.onError) this.onError('Microphone access is required to answer call.');
       return false;
     }
 
+    this.microphonePending = false;
+    if (generation !== this.callGeneration || this.closed) { this.audioManager.cleanup(); return false; }
     this.soundManager.stopAll();
     this.setState('connecting');
 
-    this.ws?.send(
-      JSON.stringify({
-        type: 'call-accept',
-        roomId: this.options.roomId,
-      })
-    );
+    this.clearRingTimeout();
+    await this.sendSignal('call-accept');
 
     return true;
   }
@@ -292,12 +315,8 @@ export class WebRTCClient {
     this.soundManager.stopAll();
     this.setState('waiting');
 
-    this.ws?.send(
-      JSON.stringify({
-        type: 'call-decline',
-        roomId: this.options.roomId,
-      })
-    );
+    this.cleanupCallSession();
+    void this.sendSignal('call-decline');
   }
 
   /**
@@ -307,12 +326,8 @@ export class WebRTCClient {
     this.soundManager.stopAll();
     this.setState('waiting');
 
-    this.ws?.send(
-      JSON.stringify({
-        type: 'call-cancel',
-        roomId: this.options.roomId,
-      })
-    );
+    this.cleanupCallSession();
+    void this.sendSignal('call-cancel');
   }
 
   private async initiatePeerConnection() {
@@ -322,21 +337,25 @@ export class WebRTCClient {
       { urls: 'stun:stun.cloudflare.com:3478' },
     ];
 
+    const runtime = await runtimeConfig().catch(() => ({} as { iceServers?: RTCIceServer[] }));
     const config: RTCConfiguration = {
-      iceServers: this.options.iceServers || defaultIceServers,
+      iceServers: this.options.iceServers || runtime.iceServers || defaultIceServers,
       iceCandidatePoolSize: 2,
       bundlePolicy: 'max-bundle',
       rtcpMuxPolicy: 'require',
     };
 
+    if (this.pc) return;
     this.pc = new RTCPeerConnection(config);
 
     // Attach clean local audio track
     if (!this.audioManager.getLocalStream()) {
       try {
         await this.audioManager.initLocalAudio();
-      } catch (e: any) {
-        console.warn('[WebRTC] Microphone init in peer connection:', e);
+      } catch {
+        this.cleanupCallSession();
+        this.setState('waiting');
+        throw new Error('Microphone access is required to call.');
       }
     }
 
@@ -350,13 +369,7 @@ export class WebRTCClient {
     // ICE Candidate handler
     this.pc.onicecandidate = (event) => {
       if (event.candidate && this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(
-          JSON.stringify({
-            type: 'candidate',
-            roomId: this.options.roomId,
-            payload: event.candidate,
-          })
-        );
+        void this.sendSignal('candidate', event.candidate.toJSON());
       }
     };
 
@@ -399,7 +412,7 @@ export class WebRTCClient {
     };
 
     // Setup DataChannel for text fallback & protocol sync
-    if (this.isInitiator) {
+    if (this.state === 'connecting' && this.isInitiator) {
       this.dataChannel = this.pc.createDataChannel('imicall-data', {
         ordered: true,
       });
@@ -416,7 +429,7 @@ export class WebRTCClient {
     channel.onmessage = (event) => {
       try {
         const parsed = JSON.parse(event.data);
-        if (parsed.type === 'chat' && this.onChatMessage) {
+        if (parsed.type === 'chat' && typeof parsed.text === 'string' && parsed.text.length <= 4000 && this.onChatMessage) {
           this.onChatMessage({
             id: parsed.id,
             sender: 'peer',
@@ -446,19 +459,14 @@ export class WebRTCClient {
 
     await this.pc.setLocalDescription(tunedOffer);
 
-    this.ws?.send(
-      JSON.stringify({
-        type: 'offer',
-        roomId: this.options.roomId,
-        payload: tunedOffer,
-      })
-    );
+    await this.sendSignal('offer', tunedOffer);
   }
 
   private async handleOffer(offer: RTCSessionDescriptionInit) {
     if (!this.pc) return;
 
     await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
+    await this.flushCandidates();
 
     const answer = await this.pc.createAnswer();
     const tunedSdp = tuneSdpForLowBandwidth(answer.sdp || '', this.currentProfile);
@@ -469,38 +477,32 @@ export class WebRTCClient {
 
     await this.pc.setLocalDescription(tunedAnswer);
 
-    this.ws?.send(
-      JSON.stringify({
-        type: 'answer',
-        roomId: this.options.roomId,
-        payload: tunedAnswer,
-      })
-    );
+    await this.sendSignal('answer', tunedAnswer);
   }
 
   private async handleAnswer(answer: RTCSessionDescriptionInit) {
     if (!this.pc) return;
     await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+    await this.flushCandidates();
   }
 
   public setProfile(profile: SignalProfile) {
     this.currentProfile = profile;
     if (this.onProfileChange) this.onProfileChange(profile);
 
-    const payload = { profile };
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(
-        JSON.stringify({
-          type: 'profile-change',
-          roomId: this.options.roomId,
-          payload,
-        })
-      );
+    void this.sendSignal('profile-change', { profile });
+    // Apply bitrate without replacing the live peer connection.
+    for (const sender of this.pc?.getSenders() || []) {
+      const parameters = sender.getParameters();
+      if (parameters.encodings?.length) {
+        parameters.encodings[0].maxBitrate = { extreme: 10000, balanced: 18000, hd: 32000 }[profile];
+        void sender.setParameters(parameters).catch(() => {});
+      }
     }
+  }
 
-    if (this.pc && this.isInitiator && this.pc.signalingState === 'stable') {
-      this.createOffer().catch((err) => console.warn('[WebRTC] Renegotiation error:', err));
-    }
+  private async flushCandidates() {
+    for (const candidate of this.candidates.splice(0)) await this.pc?.addIceCandidate(candidate);
   }
 
   public getCurrentProfile(): SignalProfile {
@@ -508,7 +510,7 @@ export class WebRTCClient {
   }
 
   public sendChatMessage(text: string): ChatMessage | null {
-    if (!text.trim()) return null;
+    if (!text.trim() || text.length > 4000 || this.dataChannel?.readyState !== 'open') return null;
 
     const chatMsg: ChatMessage = {
       id: Math.random().toString(36).substring(2, 9),
@@ -550,6 +552,9 @@ export class WebRTCClient {
    * Resets active WebRTC media session without dropping the WebSocket room connection.
    */
   public cleanupCallSession() {
+    this.callGeneration++;
+    this.clearRingTimeout();
+    this.candidates = [];
     this.stopStatsMonitoring();
     this.audioManager.cleanup();
     if (this.dataChannel) {
@@ -574,38 +579,17 @@ export class WebRTCClient {
    */
   public endCall() {
     this.soundManager.stopAll();
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(
-        JSON.stringify({
-          type: 'call-ended',
-          roomId: this.options.roomId,
-        })
-      );
-    }
+    void this.sendSignal('call-ended');
     this.cleanupCallSession();
     this.setState('waiting');
   }
 
   public close() {
+    this.closed = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
     this.soundManager.stopAll();
-    this.stopStatsMonitoring();
-    this.audioManager.cleanup();
-
-    if (this.dataChannel) {
-      this.dataChannel.close();
-      this.dataChannel = null;
-    }
-
-    if (this.pc) {
-      this.pc.close();
-      this.pc = null;
-    }
-
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-
-    this.setState('idle');
+    this.cleanupCallSession();
+    this.ws?.close();
+    this.ws = null;
   }
 }

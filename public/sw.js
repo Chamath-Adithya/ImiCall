@@ -1,6 +1,6 @@
 // Service Worker for ImiCall Background Calling, Web Push Notifications & Instant 2G Offline Caching
 
-const CACHE_NAME = 'imicall-v4-cache';
+const CACHE_NAME = 'imicall-v5-private-cache';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
@@ -24,7 +24,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.filter((key) => key.startsWith('imicall-') && key !== CACHE_NAME).map((key) => caches.delete(key))
       );
     }).then(() => self.clients.claim())
   );
@@ -36,6 +36,7 @@ self.addEventListener('fetch', (event) => {
 
   // Skip WebSocket, API, health endpoints, or non-GET
   if (
+    url.origin !== self.location.origin ||
     url.pathname.startsWith('/api') ||
     url.pathname.startsWith('/ws') ||
     url.pathname.startsWith('/health') ||
@@ -68,11 +69,11 @@ self.addEventListener('fetch', (event) => {
         .then((networkResponse) => {
           if (networkResponse && networkResponse.status === 200) {
             const clone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put('/', clone));
+            if (!url.search) caches.open(CACHE_NAME).then((cache) => cache.put(url.pathname, clone));
           }
           return networkResponse;
         })
-        .catch(() => caches.match('/') || caches.match('/index.html'))
+        .catch(async () => (await caches.match('/')) || (await caches.match('/index.html')) || new Response('You are offline. Reconnect to make a call.', { status: 503 }))
     );
     return;
   }
@@ -113,6 +114,8 @@ self.addEventListener('push', (event) => {
 
   const options = {
     body: data.body,
+    icon: '/icon-192.svg',
+    badge: '/favicon.svg',
     vibrate: [500, 250, 500, 250, 500, 250, 500],
     tag: 'imicall-incoming-call',
     renotify: true,
@@ -136,7 +139,8 @@ self.addEventListener('notificationclick', (event) => {
     return;
   }
 
-  const targetUrl = event.notification.data?.url || '/';
+  const requested = new URL(event.notification.data?.url || '/', self.location.origin);
+  const targetUrl = requested.origin === self.location.origin ? requested.href : self.location.origin;
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {

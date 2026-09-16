@@ -1,11 +1,11 @@
 {
-  "name": "ImiCall — Private Calling & Phone Book",
+  "name": "ImiCall \u2014 Private Calling & Phone Book",
   "short_name": "ImiCall",
-  "description": "Encrypted 24/7 direct calling and private speed-dial phone book.",
+  "description": "Private voice calls without an account. Your phone book stays on your device.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#141414",
-  "theme_color": "#141414",
+  "background_color": "#111111",
+  "theme_color": "#111111",
   "orientation": "portrait",
   "icons": [
     {
@@ -25,5 +25,6 @@
       "sizes": "any",
       "type": "image/svg+xml"
     }
-  ]
+  ],
+  "id": "/"
 }

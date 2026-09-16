@@ -1,79 +1,39 @@
-export const VAPID_PUBLIC_KEY = 'BOuJcOk-mNS1r3WsBBtmDY5wnqKSdPmbcUe-_bv7I8h9ptc3ILFsWJ8iko0iY3qIhQEeIRH0T_wSu1f3Z7_7WsA';
-
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = window.atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i);
-  }
-  return outputArray;
+import { runtimeConfig } from './runtimeConfig';
+import { localStore } from './localStore';
+import { lineAuth, randomHex } from './privateLine';
+const DEVICE_KEY = 'imicall_device_v2';
+export function deviceId() {
+  let id = localStore.getItem(DEVICE_KEY);
+  if (!id || !/^[a-f0-9]{32}$/.test(id)) { id = randomHex(16); localStore.setItem(DEVICE_KEY, id); }
+  return id;
 }
-
 export class PushNotificationManager {
   private static registration: ServiceWorkerRegistration | null = null;
-
-  static async registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
-    if (!('serviceWorker' in navigator)) {
-      console.info('[Push] Service Workers not supported');
-      return null;
-    }
-
-    try {
-      this.registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
-      console.log('[Push] Service Worker registered:', this.registration.scope);
-      return this.registration;
-    } catch (err) {
-      console.warn('[Push] Service Worker registration failed:', err);
-      return null;
-    }
+  static async registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return null;
+    try { await navigator.serviceWorker.register('/sw.js'); this.registration = await navigator.serviceWorker.ready; return this.registration; } catch { return null; }
   }
-
-  static async subscribeToLine(lineId: string): Promise<boolean> {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-      console.info('[Push] Web Push not supported on this browser');
-      return false;
-    }
-
+  static async subscribeToLine(roomId: string, secret: string): Promise<boolean> {
+    if (!('PushManager' in window) || !('Notification' in window) || Notification.permission !== 'granted') return false;
     try {
-      const reg = this.registration || (await this.registerServiceWorker());
+      const reg = this.registration || await this.registerServiceWorker();
       if (!reg) return false;
-
-      // Check or request notification permission
-      let permission = Notification.permission;
-      if (permission === 'default') {
-        permission = await Notification.requestPermission();
-      }
-
-      if (permission !== 'granted') {
-        console.warn('[Push] Notification permission not granted');
-        return false;
-      }
-
-      // Check existing subscription
+      const { vapidPublicKey } = await runtimeConfig();
+      if (!vapidPublicKey) return false;
+      const key = Uint8Array.from(atob(vapidPublicKey.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
       let subscription = await reg.pushManager.getSubscription();
-      if (!subscription) {
-        subscription = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) as any,
-        });
-      }
-
-      // Send to signaling server
-      const response = await fetch('/api/push-subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          roomId: lineId.trim().toLowerCase(),
-          subscription,
-        }),
-      });
-
-      return response.ok;
-    } catch (err: any) {
-      console.info('[Push] Background push service unavailable:', err?.message || err);
-      return false;
-    }
+      if (subscription?.options.applicationServerKey && Array.from(new Uint8Array(subscription.options.applicationServerKey)).join() !== Array.from(key).join()) { await subscription.unsubscribe(); subscription = null; }
+      subscription ||= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      return (await fetch('/api/push-subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await lineAuth(roomId, secret)}` }, body: JSON.stringify({ roomId, subscription, deviceId: deviceId() }) })).ok;
+    } catch { return false; }
+  }
+  static async unsubscribeFromLine(roomId: string, secret: string) {
+    try { await fetch('/api/push-unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await lineAuth(roomId, secret)}` }, body: JSON.stringify({ roomId, deviceId: deviceId() }) }); } catch { /* Memory entries expire within 24 hours. */ }
+  }
+  static async disable(lines: { id: string; passcode: string }[]) {
+    await Promise.all(lines.map(line => this.unsubscribeFromLine(line.id, line.passcode)));
+    const reg = this.registration || await this.registerServiceWorker();
+    const sub = await reg?.pushManager.getSubscription();
+    await sub?.unsubscribe();
   }
 }

@@ -38,21 +38,21 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {/* Security & Room */}
-          <div style={{ background: '#181818', border: '1px solid rgba(255,255,255,0.08)', padding: '0.85rem', borderRadius: '8px' }}>
+          <div style={{ background: '#181818', border: '0', padding: '0.85rem', borderRadius: '8px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
               <span style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.7)' }}>Room ID</span>
-              <span style={{ fontSize: '0.85rem', fontFamily: 'monospace', color: '#ffffff' }}>{roomId}</span>
+              <span style={{ fontSize: '0.85rem', fontFamily: 'monospace', color: '#ffffff', overflowWrap: 'anywhere', maxWidth: '65%' }}>{roomId}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.7)' }}>End-to-End Encryption</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.8rem', color: '#249c6f' }}>
-                <ShieldCheck size={15} /> {isE2eeActive ? 'PIN 2023 Locked' : 'DTLS-SRTP'}
+                <ShieldCheck size={15} /> {isE2eeActive ? 'DTLS-SRTP · verified setup' : 'Not connected'}
               </span>
             </div>
           </div>
 
           {/* Signal Tuning */}
-          <div style={{ background: '#181818', border: '1px solid rgba(255,255,255,0.08)', padding: '0.85rem', borderRadius: '8px' }}>
+          <div style={{ background: '#181818', border: '0', padding: '0.85rem', borderRadius: '8px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '0.5rem' }}>
               <Zap size={16} color="#249c6f" />
               <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#ffffff' }}>Active Opus SDP Tuning</span>
@@ -61,12 +61,12 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
               <div>Target Bitrate: <strong style={{ color: '#249c6f' }}>{currentProfile.bitrate / 1000} kbps</strong></div>
               <div>Packet Frame: <strong style={{ color: '#ffffff' }}>{currentProfile.ptime} ms</strong></div>
               <div>In-band FEC: <strong style={{ color: '#249c6f' }}>Enforced (1)</strong></div>
-              <div>DTX: <strong style={{ color: '#249c6f' }}>Active</strong></div>
+              <div>DTX: <strong style={{ color: '#249c6f' }}>{currentProfile.useDtx ? 'Active' : 'Off'}</strong></div>
             </div>
           </div>
 
           {/* Real-Time Network Quality */}
-          <div style={{ background: '#181818', border: '1px solid rgba(255,255,255,0.08)', padding: '0.85rem', borderRadius: '8px' }}>
+          <div style={{ background: '#181818', border: '0', padding: '0.85rem', borderRadius: '8px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '0.5rem' }}>
               <Radio size={16} color="#249c6f" />
               <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#ffffff' }}>Live Telemetry</span>

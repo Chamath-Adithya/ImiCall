@@ -27,3 +27,7 @@ dist-ssr
 .env
 .env.local
 .env.production
+
+# Legacy runtime user data must never be committed again
+server/subscriptions.json
+server/deleted_rooms.json

@@ -1,0 +1,7 @@
+# ImiCall
+> One-to-one browser voice calls without an account or phone number.
+
+- [Product and FAQ](/about.html): how private invitations, local contacts and browser calls work.
+- [Privacy](/privacy.html): storage, permissions, encrypted negotiation, optional push retention and limitations.
+
+Contacts and invitation secrets stay in browser storage. The application does not record calls or persist chat messages. The server holds live routing and opt-in push subscriptions only in memory; push entries expire within 24 hours of renewal and disappear on restart. Push delivery is not guaranteed. Hosting/network metadata may exist outside application control. This is not an audited anonymity tool, telephone replacement or emergency calling service.

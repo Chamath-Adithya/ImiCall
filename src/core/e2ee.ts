@@ -77,8 +77,7 @@ export class AudioE2EE {
               encodedFrame.data = encryptedData;
               controller.enqueue(encodedFrame);
             } catch (err) {
-              console.warn('[E2EE] Frame encryption failed, sending raw:', err);
-              controller.enqueue(encodedFrame);
+              console.warn('[E2EE] Frame encryption failed; discarded frame.');
             }
           },
         });
@@ -177,7 +176,7 @@ export class AudioE2EE {
     // Check magic byte
     if (input[0] !== MAGIC_BYTE) {
       // Frame was not encrypted with our schema, pass through or discard
-      return buffer;
+      return null;
     }
 
     const cryptoApi = getCrypto();

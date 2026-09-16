@@ -186,6 +186,7 @@ export class AudioManager {
   }
 
   cleanup() {
+    this.isMuted = false;
     this.releaseWakeLock();
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());

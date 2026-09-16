@@ -1,431 +1,176 @@
-import http from 'http';
-import fs from 'fs';
-import path from 'path';
-import zlib from 'zlib';
-import { fileURLToPath } from 'url';
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import zlib from 'node:zlib';
+import { fileURLToPath } from 'node:url';
+import { timingSafeEqual, createHmac, randomBytes } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import webpush from 'web-push';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DIST_DIR = path.resolve(__dirname, '../dist');
-const PUBLIC_DIR = path.resolve(__dirname, '../public');
-
-const PORT = process.env.PORT || 8080;
-
-const VAPID_PUBLIC_KEY = 'BOuJcOk-mNS1r3WsBBtmDY5wnqKSdPmbcUe-_bv7I8h9ptc3ILFsWJ8iko0iY3qIhQEeIRH0T_wSu1f3Z7_7WsA';
-const VAPID_PRIVATE_KEY = 'Q8u9SokW2n1Ykeimkk2qEOrTtDxQiaa-a_SINIxEJ9g';
-
-webpush.setVapidDetails(
-  'mailto:support@imicall.app',
-  VAPID_PUBLIC_KEY,
-  VAPID_PRIVATE_KEY
-);
-
-// Map of roomId -> Map of endpoint -> subscription
-const pushSubscriptions = new Map();
-const SUBSCRIPTIONS_FILE = path.resolve(__dirname, 'subscriptions.json');
-
-// Set of deleted rooms (mutual deletion persistence)
-const deletedRooms = new Set();
-const DELETED_ROOMS_FILE = path.resolve(__dirname, 'deleted_rooms.json');
-
-function loadDeletedRooms() {
-  if (fs.existsSync(DELETED_ROOMS_FILE)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(DELETED_ROOMS_FILE, 'utf8'));
-      if (Array.isArray(data)) {
-        for (const id of data) {
-          deletedRooms.add(id.toLowerCase());
-        }
-      }
-      console.log(`[Signaling] Loaded ${deletedRooms.size} deleted connections from disk.`);
-    } catch (e) {
-      console.warn('[Signaling] Could not read deleted_rooms.json:', e);
-    }
-  }
-}
-
-function saveDeletedRooms() {
-  try {
-    fs.writeFileSync(DELETED_ROOMS_FILE, JSON.stringify(Array.from(deletedRooms), null, 2), 'utf8');
-  } catch (e) {
-    console.warn('[Signaling] Could not save deleted_rooms.json:', e);
-  }
-}
-
-function getPublicUrl() {
-  if (process.env.PUBLIC_URL && process.env.PUBLIC_URL.startsWith('http')) {
-    return process.env.PUBLIC_URL.replace(/\/+$/, '');
-  }
-  const tunnelFile = path.resolve(__dirname, 'tunnel_url.txt');
-  if (fs.existsSync(tunnelFile)) {
-    try {
-      const url = fs.readFileSync(tunnelFile, 'utf8').trim();
-      if (url.startsWith('http')) {
-        return url.replace(/\/+$/, '');
-      }
-    } catch (e) {
-      // Ignore
-    }
-  }
-  return '';
-}
-
-function loadSubscriptions() {
-  if (fs.existsSync(SUBSCRIPTIONS_FILE)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(SUBSCRIPTIONS_FILE, 'utf8'));
-      for (const [roomId, subs] of Object.entries(data)) {
-        pushSubscriptions.set(roomId, new Map(Object.entries(subs)));
-      }
-      console.log(`[Push] Loaded push subscriptions for ${pushSubscriptions.size} rooms from disk.`);
-    } catch (e) {
-      console.warn('[Push] Could not read subscriptions.json:', e);
-    }
-  }
-}
-
-function saveSubscriptions() {
-  try {
-    const data = {};
-    for (const [roomId, subMap] of pushSubscriptions.entries()) {
-      data[roomId] = Object.fromEntries(subMap.entries());
-    }
-    fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(data, null, 2), 'utf8');
-  } catch (e) {
-    console.warn('[Push] Could not save subscriptions.json:', e);
-  }
-}
-
-loadSubscriptions();
-loadDeletedRooms();
-
-const MIME_TYPES = {
-  '.html': 'text/html',
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-};
-
-function sendCompressedFile(filePath, contentType, isHtml, req, res) {
-  const ext = path.extname(filePath).toLowerCase();
-  const acceptEncoding = req.headers['accept-encoding'] || '';
-  const isCompressible = ['.html', '.js', '.css', '.svg', '.json', '.txt'].includes(ext);
-
-  const headers = {
-    'Content-Type': contentType,
-    'Cache-Control': isHtml ? 'no-cache' : 'public, max-age=31536000, immutable',
-    'Vary': 'Accept-Encoding',
-  };
-
-  const rawStream = fs.createReadStream(filePath);
-
-  if (isCompressible && acceptEncoding.includes('gzip')) {
-    headers['Content-Encoding'] = 'gzip';
-    res.writeHead(200, headers);
-    rawStream.pipe(zlib.createGzip({ level: 9 })).pipe(res);
-  } else if (isCompressible && acceptEncoding.includes('deflate')) {
-    headers['Content-Encoding'] = 'deflate';
-    res.writeHead(200, headers);
-    rawStream.pipe(zlib.createDeflate()).pipe(res);
-  } else {
-    res.writeHead(200, headers);
-    rawStream.pipe(res);
-  }
-}
-
-const server = http.createServer((req, res) => {
-  // CORS & Security headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  // Health endpoint
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', uptime: process.uptime(), rooms: rooms.size }));
-    return;
-  }
-
-  // Config endpoint (public tunnel URL and VAPID key)
-  if (req.url === '/api/config') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      publicUrl: getPublicUrl(),
-      vapidPublicKey: VAPID_PUBLIC_KEY
-    }));
-    return;
-  }
-
-  // Get deleted connections list (for offline peer sync)
-  if (req.url === '/api/deleted-connections') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ deletedRooms: Array.from(deletedRooms) }));
-    return;
-  }
-
-  // Delete connection endpoint (mutual deletion persistence & push cleanup)
-  if (req.method === 'POST' && req.url === '/api/delete-connection') {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const { roomId } = JSON.parse(body);
-        if (roomId) {
-          const roomKey = roomId.trim().toLowerCase();
-          deletedRooms.add(roomKey);
-          saveDeletedRooms();
-          pushSubscriptions.delete(roomKey);
-          saveSubscriptions();
-
-          // Broadcast to any active clients in this room
-          const rClients = rooms.get(roomId) || rooms.get(roomKey);
-          if (rClients) {
-            for (const client of rClients) {
-              if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({
-                  type: 'contact-deleted',
-                  roomId: roomKey,
-                  payload: { roomId: roomKey }
-                }));
-              }
-            }
-          }
-          console.log(`[Signaling] Mutual deletion processed for: ${roomKey}`);
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      }
-    });
-    return;
-  }
-
-  // VAPID public key endpoint
-  if (req.url === '/api/vapid-public-key') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ publicKey: VAPID_PUBLIC_KEY }));
-    return;
-  }
-
-  // Push Subscription registration
-  if (req.method === 'POST' && req.url === '/api/push-subscribe') {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const { roomId, subscription } = JSON.parse(body);
-        if (roomId && subscription && subscription.endpoint) {
-          const roomKey = roomId.trim().toLowerCase();
-          if (!pushSubscriptions.has(roomKey)) {
-            pushSubscriptions.set(roomKey, new Map());
-          }
-          pushSubscriptions.get(roomKey).set(subscription.endpoint, subscription);
-          saveSubscriptions();
-          console.log(`[Push] Registered subscription for room: ${roomKey}`);
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      }
-    });
-    return;
-  }
-
-  // Serve service worker sw.js directly if requested
-  if (req.url === '/sw.js') {
-    const swPath = fs.existsSync(path.join(DIST_DIR, 'sw.js'))
-      ? path.join(DIST_DIR, 'sw.js')
-      : path.join(PUBLIC_DIR, 'sw.js');
-    if (fs.existsSync(swPath)) {
-      sendCompressedFile(swPath, 'application/javascript', true, req, res);
-      return;
-    }
-  }
-
-  // Static file serving from dist/
-  if (fs.existsSync(DIST_DIR)) {
-    let reqPath = req.url.split('?')[0];
-    if (reqPath === '/' || reqPath === '') {
-      reqPath = '/index.html';
-    }
-
-    let filePath = path.join(DIST_DIR, reqPath);
-
-    // Prevent directory traversal
-    if (!filePath.startsWith(DIST_DIR)) {
-      res.writeHead(403);
-      res.end('Forbidden');
-      return;
-    }
-
-    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-      const ext = path.extname(filePath).toLowerCase();
-      const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-      sendCompressedFile(filePath, contentType, ext === '.html', req, res);
-      return;
-    }
-
-    // Fallback to index.html for client-side routing
-    const indexPath = path.join(DIST_DIR, 'index.html');
-    if (fs.existsSync(indexPath)) {
-      sendCompressedFile(indexPath, 'text/html', true, req, res);
-      return;
-    }
-  }
-
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('ImiCall Signaling Server (Ultra-Low Latency WebSocket & Web Push)');
-});
-
-const wss = new WebSocketServer({ server });
-
-// Map of roomId -> Set of WebSocket clients
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist');
+const port = Number(process.env.PORT || 8080);
+const publicUrl = (() => { try { const url = new URL(process.env.PUBLIC_URL); return ['http:', 'https:'].includes(url.protocol) ? url.origin : ''; } catch { return ''; } })();
+const keys = process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
+  ? { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY }
+  : webpush.generateVAPIDKeys();
+webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:admin@example.com', keys.publicKey, keys.privateKey);
+// Routing and opt-in delivery addresses only. No filesystem writes, call logs or recordings.
 const rooms = new Map();
-
-wss.on('connection', (ws) => {
-  let currentRoom = null;
-
-  ws.on('message', (data) => {
+const DAY = 86400000;
+function relayConfig() {
+  if (!process.env.TURN_URLS || !process.env.TURN_SECRET) return undefined;
+  const username = `${Math.floor(Date.now() / 1000) + 600}:${randomBytes(8).toString('hex')}`;
+  return [{ urls: process.env.TURN_URLS.split(',').filter(url => /^turns?:/.test(url)), username, credential: createHmac('sha1', process.env.TURN_SECRET).update(username).digest('base64') }];
+}
+const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const validRoom = id => typeof id === 'string' && /^line-[a-f0-9]{32}$/.test(id);
+const validToken = token => typeof token === 'string' && /^[a-f0-9]{64}$/.test(token);
+const json = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml' };
+const compressed = new Map();
+function serve(file, req, res) {
+  const stat = fs.statSync(file);
+  const hashed = /[/\\]assets[/\\]/.test(file);
+  const gzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+  const key = `${file}:${stat.mtimeMs}:${gzip}`;
+  let data = compressed.get(key);
+  if (!data) {
+    let raw = fs.readFileSync(file);
+    if (publicUrl && path.extname(file) === '.html') {
+      const pathname = path.basename(file) === 'index.html' ? '/' : '/' + path.basename(file);
+      raw = Buffer.from(raw.toString().replace('</head>', `<link rel="canonical" href="${publicUrl}${pathname}"><meta property="og:url" content="${publicUrl}${pathname}"></head>`));
+    }
+    data = gzip ? zlib.gzipSync(raw) : raw;
+    if (compressed.size > 100) compressed.clear();
+    compressed.set(key, data);
+  }
+  res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream', 'Cache-Control': hashed ? 'public,max-age=31536000,immutable' : 'no-cache', Vary: 'Accept-Encoding', ...(gzip ? { 'Content-Encoding': 'gzip' } : {}) });
+  res.end(data);
+}
+async function bodyOf(req) {
+  let body = '';
+  for await (const chunk of req) { body += chunk; if (body.length > 12000) throw new Error('Body too large'); }
+  return JSON.parse(body);
+}
+function allowedEndpoint(endpoint) {
+  try {
+    const u = new URL(endpoint);
+    return u.protocol === 'https:' && !u.username && !u.password && (!u.port || u.port === '443') && ['fcm.googleapis.com', 'updates.push.services.mozilla.com', 'web.push.apple.com', 'notify.windows.com'].some(h => u.hostname === h || u.hostname.endsWith(`.${h}`));
+  } catch { return false; }
+}
+const server = http.createServer(async (req, res) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Permissions-Policy', 'microphone=(self), camera=(self), geolocation=()');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+  if (publicUrl.startsWith('https:')) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  const origin = req.headers.origin;
+  if (origin && ![publicUrl, `http://${req.headers.host}`, `https://${req.headers.host}`].includes(origin)) return json(res, 403, { error: 'Origin not allowed' });
+  const url = new URL(req.url, 'http://localhost');
+  if (url.search) res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  if (url.pathname === '/robots.txt' && publicUrl) { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end(`User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /ws\nDisallow: /health\nSitemap: ${publicUrl}/sitemap.xml\n`); }
+  if (url.pathname === '/health') return json(res, 200, { status: 'ok' });
+  if (url.pathname === '/api/config') return json(res, 200, { publicUrl, vapidPublicKey: keys.publicKey, pushRetentionHours: 24, iceServers: relayConfig() });
+  if (req.method === 'POST' && ['/api/push-subscribe', '/api/push-unsubscribe'].includes(url.pathname)) {
     try {
-      const message = JSON.parse(data.toString());
-      const { type, roomId, payload } = message;
-
-      if (type === 'join') {
-        currentRoom = roomId;
-        const roomKey = roomId.trim().toLowerCase();
-        if (deletedRooms.has(roomKey)) {
-          deletedRooms.delete(roomKey);
-          saveDeletedRooms();
+      const { roomId, subscription, deviceId } = await bodyOf(req);
+      const room = rooms.get(roomId);
+      if (!room || !equal(req.headers.authorization?.replace(/^Bearer /, ''), room.auth) || !/^[a-f0-9]{32}$/.test(deviceId || '')) return json(res, 403, { error: 'Open your private connection first' });
+      if (url.pathname.endsWith('unsubscribe')) { room.push.delete(deviceId); return json(res, 200, { success: true }); }
+      if (!allowedEndpoint(subscription?.endpoint) || typeof subscription?.keys?.p256dh !== 'string' || typeof subscription?.keys?.auth !== 'string') return json(res, 400, { error: 'Unsupported push subscription' });
+      if (room.push.size >= 2 && !room.push.has(deviceId)) return json(res, 409, { error: 'Two devices are already subscribed' });
+      room.push.set(deviceId, { subscription, expires: Date.now() + DAY });
+      return json(res, 200, { success: true });
+    } catch { return json(res, 400, { error: 'Invalid request' }); }
+  }
+  if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'Not found' });
+  if (!['GET', 'HEAD'].includes(req.method)) return json(res, 405, { error: 'Method not allowed' });
+  // Canonical and sitemap use the configured deployment URL; never invent a domain.
+  if (url.pathname === '/sitemap.xml') {
+    if (!publicUrl) return json(res, 503, { error: 'Set PUBLIC_URL for the deployment sitemap' });
+    res.writeHead(200, { 'Content-Type': 'application/xml' });
+    const safe = publicUrl.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    return res.end(`<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${['/', '/about.html', '/privacy.html'].map(p => `<url><loc>${safe}${p}</loc></url>`).join('')}</urlset>`);
+  }
+  let file;
+  try { file = path.resolve(root, `.${decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname)}`); } catch { return json(res, 400, { error: 'Invalid path' }); }
+  if (!file.startsWith(root + path.sep)) return json(res, 403, { error: 'Forbidden' });
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return json(res, 404, { error: 'Not found' });
+  serve(file, req, res);
+});
+const wss = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024, perMessageDeflate: false });
+server.on('upgrade', (req, socket, head) => {
+  if (req.url !== '/ws' || (req.headers.origin && ![publicUrl, `http://${req.headers.host}`, `https://${req.headers.host}`].includes(req.headers.origin)) || wss.clients.size >= 1000) { socket.destroy(); return; }
+  wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws));
+});
+const allowedTypes = new Set(['call-ring', 'call-accept', 'call-decline', 'call-cancel', 'call-ended', 'offer', 'answer', 'candidate', 'profile-change', 'contact-deleted']);
+const send = (ws, msg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
+wss.on('connection', ws => {
+  let current = null, device = '', count = 0, windowStart = Date.now();
+  ws.alive = true;
+  ws.on('pong', () => { ws.alive = true; });
+  const joinTimeout = setTimeout(() => { if (!current) ws.close(1008); }, 10000);
+  ws.on('message', raw => {
+    if (Date.now() - windowStart > 10000) { count = 0; windowStart = Date.now(); }
+    if (++count > 150) return ws.close(1008, 'Rate limit');
+    try {
+      const msg = JSON.parse(raw);
+      if (msg.type === 'join') {
+        if (current || !validRoom(msg.roomId) || !validToken(msg.auth) || !/^[a-f0-9]{32}$/.test(msg.deviceId || '')) return ws.close(1008);
+        let room = rooms.get(msg.roomId);
+        if (!room) {
+          if (rooms.size >= 5000) return ws.close(1013);
+          room = { auth: msg.auth, clients: new Set(), push: new Map(), pending: null, lastRing: new Map() };
+          rooms.set(msg.roomId, room);
         }
-
-        if (!rooms.has(roomId)) {
-          rooms.set(roomId, new Set());
-        }
-
-        const roomClients = rooms.get(roomId);
-        if (roomClients.size >= 2) {
-          ws.send(JSON.stringify({ type: 'room-full', message: 'Room already has 2 participants.' }));
-          return;
-        }
-
-        roomClients.add(ws);
-        const isInitiator = roomClients.size === 1;
-
-        ws.send(JSON.stringify({
-          type: 'joined',
-          roomId,
-          isInitiator,
-          peersCount: roomClients.size
-        }));
-
-        if (roomClients.size === 2) {
-          for (const client of roomClients) {
-            if (client !== ws && client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({ type: 'peer-joined' }));
-            }
-          }
-        }
+        if (!equal(room.auth, msg.auth)) return ws.close(1008);
+        if (room.clients.size >= 2) { send(ws, { type: 'room-full' }); return ws.close(1008); }
+        current = msg.roomId; device = msg.deviceId; clearTimeout(joinTimeout);
+        room.clients.add(ws);
+        send(ws, { type: 'joined', isInitiator: room.clients.size === 1, peersCount: room.clients.size });
+        for (const peer of room.clients) if (peer !== ws) send(peer, { type: 'peer-joined' });
+        if (room.pending && room.pending.expires > Date.now() && room.pending.device !== device) send(ws, room.pending.message);
         return;
       }
-
-      // Handle contact-deleted mutual sync
-      if (type === 'contact-deleted') {
-        const targetRoom = (roomId || payload?.roomId || currentRoom || '').trim().toLowerCase();
-        if (targetRoom) {
-          deletedRooms.add(targetRoom);
-          saveDeletedRooms();
-          pushSubscriptions.delete(targetRoom);
-          saveSubscriptions();
-          console.log(`[Signaling] WebSocket contact-deleted processed for: ${targetRoom}`);
-        }
-      }
-
-      // If call-ring, send background Web Push notification to partner even if browser is closed!
-      if (type === 'call-ring' && currentRoom) {
-        const roomKey = currentRoom.trim().toLowerCase();
-        const subs = pushSubscriptions.get(roomKey);
-        const callerEndpoint = payload?.callerEndpoint;
-
-        if (subs && subs.size > 0) {
-          const pushPayload = JSON.stringify({
-            title: '📞 Incoming Private Call',
-            body: 'Your partner is calling. Tap to answer now!',
-            lineId: roomKey,
-            url: `/#line=${encodeURIComponent(roomKey)}&pin=2023`,
+      const room = rooms.get(current);
+      if (!room || !room.clients.has(ws) || !allowedTypes.has(msg.type) || !Array.isArray(msg.payload?.iv) || msg.payload.iv.length !== 12 || typeof msg.payload?.data !== 'string') return;
+      const message = { type: msg.type, payload: msg.payload };
+      if (msg.type === 'call-ring') {
+        if (Date.now() - (room.lastRing.get(device) || 0) < 3000) { send(ws, { type: 'error', message: 'Please wait a few seconds before calling again.' }); return; }
+        if (room.lastRing.size > 10) room.lastRing.clear();
+        room.lastRing.set(device, Date.now());
+        room.pending = { device, message, expires: Date.now() + 90000 };
+        for (const [target, entry] of room.push) {
+          if (target === device || entry.expires <= Date.now()) continue;
+          webpush.sendNotification(entry.subscription, JSON.stringify({ title: 'Incoming ImiCall', body: 'Someone on your private line is calling. Open to answer.', url: `/#wake=${current}` }), { TTL: 90, urgency: 'high' }).catch(error => {
+            if ([404, 410].includes(error.statusCode)) room.push.delete(target);
           });
-
-          for (const [endpoint, sub] of subs.entries()) {
-            if (callerEndpoint && endpoint === callerEndpoint) {
-              continue;
-            }
-            webpush.sendNotification(sub, pushPayload, { TTL: 120, urgency: 'high' })
-              .catch((err) => {
-                if (err.statusCode === 410 || err.statusCode === 404) {
-                  subs.delete(endpoint);
-                  saveSubscriptions();
-                }
-              });
-          }
         }
       }
-
-      // Forward all signaling messages (call-ring, call-accept, call-decline, call-cancel, call-ended, offer, answer, candidate, profile-change)
-      if (currentRoom && rooms.has(currentRoom)) {
-        const roomClients = rooms.get(currentRoom);
-        for (const client of roomClients) {
-          if (client !== ws && client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type,
-              payload,
-            }));
-          }
-        }
-      }
-    } catch (err) {
-      console.error('[Signaling] Message error:', err);
-    }
+      if (['call-accept', 'call-cancel', 'call-ended', 'call-decline'].includes(msg.type)) room.pending = null;
+      if (msg.type === 'contact-deleted') room.push.delete(device);
+      for (const peer of room.clients) if (peer !== ws) send(peer, message);
+    } catch { ws.close(1008, 'Invalid message'); }
   });
-
   ws.on('close', () => {
-    if (currentRoom && rooms.has(currentRoom)) {
-      const roomClients = rooms.get(currentRoom);
-      roomClients.delete(ws);
-      if (roomClients.size === 0) {
-        rooms.delete(currentRoom);
-      } else {
-        for (const client of roomClients) {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({ type: 'peer-left' }));
-          }
-        }
-      }
-    }
+    clearTimeout(joinTimeout);
+    const room = rooms.get(current);
+    if (!room) return;
+    room.clients.delete(ws);
+    if (room.pending?.device === device) room.pending = null;
+    for (const peer of room.clients) send(peer, { type: 'peer-left' });
+    if (!room.clients.size && !room.push.size) rooms.delete(current);
   });
-
-  ws.on('error', (err) => {
-    console.error('[Signaling] Client error:', err);
-  });
+  ws.on('error', () => {});
 });
-
-server.listen(PORT, () => {
-  console.log(`[ImiCall] Server listening on port ${PORT} (Unified Static + WebSocket)`);
-});
+const sweep = setInterval(() => {
+  for (const ws of wss.clients) { if (!ws.alive) ws.terminate(); else { ws.alive = false; ws.ping(); } }
+  for (const [id, room] of rooms) {
+    for (const [device, entry] of room.push) if (entry.expires <= Date.now()) room.push.delete(device);
+    if (room.pending?.expires <= Date.now()) room.pending = null;
+    if (!room.clients.size && !room.push.size) rooms.delete(id);
+  }
+}, 30000);
+sweep.unref();
+server.listen(port, () => console.log(`ImiCall listening on ${port}; routing and push data are memory-only.`));
