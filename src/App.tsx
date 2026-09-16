@@ -279,11 +279,11 @@ export const App: React.FC = () => {
       {errorMessage && (
         <div
           style={{
-            background: 'rgba(239, 68, 68, 0.15)',
-            border: '1px solid rgba(239, 68, 68, 0.4)',
+            background: '#1f1f1f',
+            border: '1px solid rgba(255, 255, 255, 0.25)',
             borderRadius: '10px',
             padding: '0.85rem 1rem',
-            color: '#ef4444',
+            color: '#ffffff',
             fontSize: '0.85rem',
             marginBottom: '1.25rem',
             display: 'flex',
@@ -293,7 +293,7 @@ export const App: React.FC = () => {
         >
           <span>{errorMessage}</span>
           <button
-            style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontWeight: 700 }}
+            style={{ background: 'none', border: 'none', color: '#ffffff', cursor: 'pointer', fontWeight: 700 }}
             onClick={() => setErrorMessage(null)}
           >
             ✕
@@ -306,7 +306,7 @@ export const App: React.FC = () => {
         <div className="setup-grid">
           <div className="glass-panel">
             <h2 className="panel-title">
-              <Sparkles size={18} color="#10b981" /> Private Calling Room
+              <Sparkles size={18} color="#249c6f" /> Private Calling Room
             </h2>
             <p className="panel-subtitle">
               Low-signal private room with synthesized ringing and mandatory Passcode protection.
@@ -325,7 +325,7 @@ export const App: React.FC = () => {
 
             <div className="input-group">
               <label className="input-label" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <Lock size={14} /> Passcode (PIN 2023 Required)
+                <Lock size={14} color="#249c6f" /> Passcode (PIN 2023 Required)
               </label>
               <input
                 type="text"
@@ -334,7 +334,7 @@ export const App: React.FC = () => {
                 onChange={(e) => setPasscode(e.target.value)}
                 placeholder="2023"
               />
-              <span style={{ fontSize: '0.72rem', color: '#10b981', marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{ fontSize: '0.72rem', color: '#249c6f', marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <CheckCircle2 size={12} /> Mandatory secret passcode {REQUIRED_PASSCODE} enforced for dialing and answering.
               </span>
             </div>
@@ -347,14 +347,14 @@ export const App: React.FC = () => {
                 <QrCode size={18} />
               </button>
               <button className="btn btn-secondary" title="Copy Link" onClick={handleCopyInvite}>
-                {copiedLink ? <Check size={18} color="#10b981" /> : <Copy size={18} />}
+                {copiedLink ? <Check size={18} color="#249c6f" /> : <Copy size={18} />}
               </button>
             </div>
           </div>
 
           <div className="glass-panel">
             <h2 className="panel-title">
-              <Zap size={18} color="#06b6d4" /> Signal & Codec Profile
+              <Zap size={18} color="#249c6f" /> Signal & Codec Profile
             </h2>
             <p className="panel-subtitle">
               Opus audio engine is tuned to operate reliably down to 6 kbps with 60ms frames.
@@ -380,10 +380,10 @@ export const App: React.FC = () => {
               })}
             </div>
 
-            <div style={{ background: 'rgba(255,255,255,0.02)', padding: '0.85rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: '#94a3b8' }}>
-                <Wifi size={14} color="#10b981" />
-                <span><strong>Speech Clarity Filter:</strong> Active (120Hz Low-Cut + 3kHz Vocal Peaking + Dynamics Compressor).</span>
+            <div style={{ background: '#181818', padding: '0.85rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'rgba(255,255,255,0.7)' }}>
+                <Wifi size={14} color="#249c6f" />
+                <span><strong>Hardware Voice Capture:</strong> Echo cancellation, noise reduction, and auto gain control active.</span>
               </div>
             </div>
           </div>
@@ -393,19 +393,19 @@ export const App: React.FC = () => {
       {/* VIEW 2: ROOM STANDBY / WAITING TO RING */}
       {callState === 'waiting' && (
         <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem 1.5rem', maxWidth: '560px', margin: '0 auto' }}>
-          <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(16, 185, 129, 0.15)', border: '2px solid #10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem', color: '#10b981' }}>
+          <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(36, 156, 111, 0.15)', border: '2px solid #249c6f', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem', color: '#249c6f' }}>
             <Radio size={30} />
           </div>
 
-          <h2 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '0.5rem' }}>Calling Room Ready</h2>
-          <p style={{ fontSize: '0.88rem', color: '#94a3b8', marginBottom: '1.75rem' }}>
-            Room <strong style={{ color: '#f8fafc', fontFamily: 'monospace' }}>{roomId}</strong> • Passcode Protected (<strong style={{ color: '#10b981' }}>{passcode}</strong>)
+          <h2 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '0.5rem', color: '#ffffff' }}>Calling Room Ready</h2>
+          <p style={{ fontSize: '0.88rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '1.75rem' }}>
+            Room <strong style={{ color: '#ffffff', fontFamily: 'monospace' }}>{roomId}</strong> • Passcode Protected (<strong style={{ color: '#249c6f' }}>{passcode}</strong>)
           </p>
 
-          <div style={{ background: 'rgba(10, 14, 23, 0.6)', border: '1px solid var(--border-card)', borderRadius: '12px', padding: '1rem', marginBottom: '2rem' }}>
+          <div style={{ background: '#181818', border: '1px solid var(--border-card)', borderRadius: '12px', padding: '1rem', marginBottom: '2rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>Partner Status:</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 600, color: isPeerInRoom ? '#10b981' : '#f59e0b' }}>
+              <span style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)' }}>Partner Status:</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 600, color: isPeerInRoom ? '#249c6f' : 'rgba(255, 255, 255, 0.6)' }}>
                 <span className="pulse-dot" />
                 {isPeerInRoom ? 'Partner is in Room' : 'Waiting for Partner to open link...'}
               </span>
@@ -423,7 +423,7 @@ export const App: React.FC = () => {
 
             <div style={{ display: 'flex', gap: '0.5rem' }}>
               <button className="btn btn-secondary btn-full" onClick={handleCopyInvite}>
-                {copiedLink ? <Check size={16} color="#10b981" /> : <Copy size={16} />}
+                {copiedLink ? <Check size={16} color="#249c6f" /> : <Copy size={16} />}
                 {copiedLink ? 'Link Copied!' : 'Copy Invite Link'}
               </button>
               <button className="btn btn-secondary" onClick={() => setIsQrOpen(true)}>
@@ -431,7 +431,7 @@ export const App: React.FC = () => {
               </button>
             </div>
 
-            <button className="btn btn-secondary btn-full" style={{ marginTop: '0.5rem', color: '#94a3b8' }} onClick={handleEndCall}>
+            <button className="btn btn-secondary btn-full" style={{ marginTop: '0.5rem', color: 'rgba(255, 255, 255, 0.6)' }} onClick={handleEndCall}>
               Leave Room
             </button>
           </div>
@@ -446,22 +446,22 @@ export const App: React.FC = () => {
               width: '88px',
               height: '88px',
               borderRadius: '50%',
-              background: 'rgba(6, 182, 212, 0.15)',
-              border: '2px solid #06b6d4',
+              background: 'rgba(36, 156, 111, 0.15)',
+              border: '2px solid #249c6f',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               margin: '0 auto 1.5rem',
-              color: '#06b6d4',
-              boxShadow: '0 0 30px rgba(6, 182, 212, 0.4)',
+              color: '#249c6f',
+              boxShadow: '0 0 30px rgba(36, 156, 111, 0.35)',
               animation: 'pulse 1.8s infinite',
             }}
           >
             <BellRing size={40} />
           </div>
 
-          <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '0.5rem' }}>Calling Partner...</h2>
-          <p style={{ fontSize: '0.88rem', color: '#94a3b8', marginBottom: '2.5rem' }}>
+          <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '0.5rem', color: '#ffffff' }}>Calling Partner...</h2>
+          <p style={{ fontSize: '0.88rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '2.5rem' }}>
             Phone is ringing. Waiting for partner to enter PIN {REQUIRED_PASSCODE} and answer.
           </p>
 
@@ -480,23 +480,23 @@ export const App: React.FC = () => {
                 width: '88px',
                 height: '88px',
                 borderRadius: '50%',
-                background: 'rgba(16, 185, 129, 0.2)',
-                border: '2px solid #10b981',
+                background: 'rgba(36, 156, 111, 0.2)',
+                border: '2px solid #249c6f',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 margin: '0 auto 1.25rem',
-                color: '#10b981',
-                boxShadow: '0 0 35px rgba(16, 185, 129, 0.5)',
+                color: '#249c6f',
+                boxShadow: '0 0 35px rgba(36, 156, 111, 0.4)',
                 animation: 'pulse 1.2s infinite',
               }}
             >
               <PhoneCall size={42} />
             </div>
 
-            <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '0.4rem' }}>Incoming Private Call!</h2>
-            <p style={{ fontSize: '0.85rem', color: '#94a3b8', marginBottom: '1.5rem' }}>
-              Partner is calling you in room <strong style={{ color: '#fff' }}>{roomId}</strong>. Enter secret Passcode to unlock and answer:
+            <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '0.4rem', color: '#ffffff' }}>Incoming Private Call!</h2>
+            <p style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '1.5rem' }}>
+              Partner is calling you in room <strong style={{ color: '#ffffff' }}>{roomId}</strong>. Enter secret Passcode to unlock and answer:
             </p>
 
             <div className="input-group" style={{ marginBottom: '1.5rem' }}>
@@ -542,12 +542,12 @@ export const App: React.FC = () => {
           </div>
 
           <div style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>Room:</span>
-            <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#f8fafc', background: 'rgba(255,255,255,0.06)', padding: '0.2rem 0.6rem', borderRadius: '4px' }}>
+            <span style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)' }}>Room:</span>
+            <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#ffffff', background: 'rgba(255,255,255,0.08)', padding: '0.2rem 0.6rem', borderRadius: '4px' }}>
               {roomId}
             </span>
             <button className="btn btn-secondary" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }} onClick={handleCopyInvite}>
-              {copiedLink ? <Check size={14} color="#10b981" /> : <Copy size={14} />}
+              {copiedLink ? <Check size={14} color="#249c6f" /> : <Copy size={14} />}
               {copiedLink ? 'Copied' : 'Invite'}
             </button>
           </div>
@@ -556,18 +556,18 @@ export const App: React.FC = () => {
           <div className="audio-avatars-container">
             <div className="avatar-wrapper">
               <div className={`avatar-disc ${localVolume > 5 && !isMuted ? 'speaking' : ''}`}>
-                {isMuted ? <MicOff size={36} color="#ef4444" /> : <Mic size={36} color="#10b981" />}
+                {isMuted ? <MicOff size={36} color="rgba(255, 255, 255, 0.5)" /> : <Mic size={36} color="#249c6f" />}
               </div>
               <span className="avatar-label">You {isMuted && '(Muted)'}</span>
-              <AudioWaveform volume={localVolume} isActive={!isMuted} color="#10b981" />
+              <AudioWaveform volume={localVolume} isActive={!isMuted} color="#249c6f" />
             </div>
 
             <div className="avatar-wrapper">
               <div className={`avatar-disc ${remoteVolume > 5 ? 'speaking' : ''}`}>
-                <Volume2 size={36} color={callState === 'connected' ? '#06b6d4' : '#64748b'} />
+                <Volume2 size={36} color={callState === 'connected' ? '#249c6f' : 'rgba(255, 255, 255, 0.4)'} />
               </div>
               <span className="avatar-label">Partner</span>
-              <AudioWaveform volume={remoteVolume} isActive={callState === 'connected'} color="#06b6d4" />
+              <AudioWaveform volume={remoteVolume} isActive={callState === 'connected'} color="#249c6f" />
             </div>
           </div>
 
@@ -575,13 +575,13 @@ export const App: React.FC = () => {
           <div className="metrics-strip">
             <div className="metric-box">
               <div className="metric-label">Latency (RTT)</div>
-              <div className={`metric-value ${networkStats && networkStats.rtt > 300 ? 'poor' : 'good'}`}>
+              <div className="metric-value good">
                 {networkStats ? `${networkStats.rtt}ms` : '--'}
               </div>
             </div>
             <div className="metric-box">
               <div className="metric-label">Packet Loss</div>
-              <div className={`metric-value ${networkStats && networkStats.packetLoss > 10 ? 'poor' : 'good'}`}>
+              <div className="metric-value good">
                 {networkStats ? `${networkStats.packetLoss}%` : '0%'}
               </div>
             </div>
@@ -609,9 +609,9 @@ export const App: React.FC = () => {
                 style={{
                   fontSize: '0.78rem',
                   padding: '0.4rem 0.8rem',
-                  borderColor: selectedProfile === key ? '#10b981' : undefined,
-                  background: selectedProfile === key ? 'rgba(16, 185, 129, 0.15)' : undefined,
-                  color: selectedProfile === key ? '#10b981' : undefined,
+                  borderColor: selectedProfile === key ? '#249c6f' : undefined,
+                  background: selectedProfile === key ? 'rgba(36, 156, 111, 0.15)' : undefined,
+                  color: selectedProfile === key ? '#249c6f' : '#ffffff',
                 }}
               >
                 {SIGNAL_PROFILES[key].badge}
@@ -648,7 +648,7 @@ export const App: React.FC = () => {
                     width: '8px',
                     height: '8px',
                     borderRadius: '50%',
-                    background: '#ef4444',
+                    background: '#249c6f',
                   }}
                 />
               )}

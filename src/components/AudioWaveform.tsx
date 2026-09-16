@@ -9,7 +9,7 @@ interface AudioWaveformProps {
 export const AudioWaveform: React.FC<AudioWaveformProps> = ({
   volume,
   isActive,
-  color = '#10b981',
+  color = '#249c6f',
 }) => {
   const bars = [0.3, 0.6, 1.0, 0.7, 0.4];
 
@@ -33,7 +33,7 @@ export const AudioWaveform: React.FC<AudioWaveformProps> = ({
             style={{
               width: '4px',
               height: `${Math.max(4, height)}px`,
-              backgroundColor: isActive && volume > 5 ? color : '#334155',
+              backgroundColor: isActive && volume > 5 ? color : 'rgba(255, 255, 255, 0.15)',
               borderRadius: '2px',
               transition: 'height 0.08s ease-out, background-color 0.2s ease',
             }}

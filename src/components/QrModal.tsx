@@ -18,7 +18,7 @@ export const QrModal: React.FC<QrModalProps> = ({ isOpen, onClose, inviteUrl }) 
         width: 260,
         margin: 2,
         color: {
-          dark: '#090d16',
+          dark: '#181818',
           light: '#ffffff',
         },
       })
@@ -40,15 +40,15 @@ export const QrModal: React.FC<QrModalProps> = ({ isOpen, onClose, inviteUrl }) 
       <div className="modal-card" style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <QrIcon size={20} color="#10b981" />
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Scan with Mobile Camera</h3>
+            <QrIcon size={20} color="#249c6f" />
+            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff' }}>Scan with Mobile Camera</h3>
           </div>
           <button className="btn btn-secondary" style={{ padding: '0.4rem' }} onClick={onClose}>
-            <X size={18} />
+            <X size={18} color="#ffffff" />
           </button>
         </div>
 
-        <p style={{ fontSize: '0.82rem', color: '#94a3b8', marginBottom: '1.25rem' }}>
+        <p style={{ fontSize: '0.82rem', color: 'rgba(255,255,255,0.7)', marginBottom: '1.25rem' }}>
           Open your phone camera to join the private call room instantly without typing.
         </p>
 
@@ -66,7 +66,7 @@ export const QrModal: React.FC<QrModalProps> = ({ isOpen, onClose, inviteUrl }) 
             <img src={qrSrc} alt="Room QR Code" style={{ display: 'block', width: '220px', height: '220px' }} />
           </div>
         ) : (
-          <div style={{ height: '220px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ height: '220px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.5)' }}>
             Generating QR...
           </div>
         )}

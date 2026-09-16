@@ -38,17 +38,17 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
     <div className="chat-drawer">
       <div className="chat-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <MessageSquare size={18} color="#10b981" />
-          <h3 style={{ fontSize: '0.95rem', fontWeight: 700 }}>Emergency Text Channel</h3>
+          <MessageSquare size={18} color="#249c6f" />
+          <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#ffffff' }}>Emergency Text Channel</h3>
         </div>
         <button className="btn btn-secondary" style={{ padding: '0.35rem' }} onClick={onClose}>
-          <X size={16} />
+          <X size={16} color="#ffffff" />
         </button>
       </div>
 
       <div className="chat-messages">
         {messages.length === 0 ? (
-          <div style={{ color: '#64748b', fontSize: '0.8rem', textAlign: 'center', margin: 'auto' }}>
+          <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.8rem', textAlign: 'center', margin: 'auto' }}>
             Zero-bandwidth text fallback. Messages travel directly peer-to-peer via WebRTC DataChannel.
           </div>
         ) : (
@@ -58,7 +58,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
               <div
                 style={{
                   fontSize: '0.65rem',
-                  opacity: 0.6,
+                  opacity: 0.7,
                   marginTop: '0.2rem',
                   textAlign: msg.sender === 'me' ? 'right' : 'left',
                 }}
