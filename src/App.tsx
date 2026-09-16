@@ -22,9 +22,11 @@ import {
   Plus,
   Trash2,
   FolderOpen,
+  Bell,
 } from 'lucide-react';
 import { SignalProfile, NetworkStats, ChatMessage, CallState, SIGNAL_PROFILES, REQUIRED_PASSCODE } from './core/types';
 import { WebRTCClient } from './core/webrtcClient';
+import { PushNotificationManager } from './core/pushManager';
 import { AudioWaveform } from './components/AudioWaveform';
 import { DiagnosticsModal } from './components/DiagnosticsModal';
 import { QrModal } from './components/QrModal';
@@ -76,6 +78,7 @@ export const App: React.FC = () => {
   const [newLinePasscode, setNewLinePasscode] = useState<string>(REQUIRED_PASSCODE);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [copiedLineId, setCopiedLineId] = useState<string | null>(null);
+  const [isPushEnabled, setIsPushEnabled] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Refs
@@ -91,10 +94,17 @@ export const App: React.FC = () => {
 
   // Load or Save Dedicated Lines from URL or LocalStorage
   useEffect(() => {
+    // Register Service Worker for Background Push Notifications
+    PushNotificationManager.registerServiceWorker();
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      setIsPushEnabled(true);
+    }
+
     const hash = window.location.hash.substring(1);
     const params = new URLSearchParams(hash);
     const hashLine = params.get('line') || params.get('room');
     const hashPin = params.get('pin');
+    const hashName = params.get('name');
 
     let currentList: SavedLine[] = [];
     const savedListRaw = localStorage.getItem(STORAGE_LINES_KEY);
@@ -125,14 +135,17 @@ export const App: React.FC = () => {
     // If incoming invite URL hash
     if (hashLine) {
       const pinToUse = hashPin || REQUIRED_PASSCODE;
+      const lineNameToUse = hashName || `Shared Route (${currentList.length + 1})`;
       const existing = currentList.find((l) => l.id === hashLine);
       if (!existing) {
         currentList.push({
           id: hashLine,
-          name: `Shared Line (${currentList.length + 1})`,
+          name: lineNameToUse,
           passcode: pinToUse,
           createdAt: Date.now(),
         });
+      } else if (hashName) {
+        existing.name = hashName;
       }
       saveLinesList(currentList, hashLine);
       setLineId(hashLine);
@@ -258,6 +271,12 @@ export const App: React.FC = () => {
 
     clientRef.current = client;
     await client.start();
+
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      PushNotificationManager.subscribeToLine(targetLine).then((ok) => {
+        if (ok) setIsPushEnabled(true);
+      });
+    }
   };
 
   const handleSwitchLine = (targetLine: SavedLine) => {
@@ -310,10 +329,17 @@ export const App: React.FC = () => {
   const handleCopySpecificLineInvite = (targetLine: SavedLine, e: React.MouseEvent) => {
     e.stopPropagation();
     const url = new URL(window.location.href);
-    url.hash = `line=${encodeURIComponent(targetLine.id)}&pin=${encodeURIComponent(targetLine.passcode)}`;
+    url.hash = `line=${encodeURIComponent(targetLine.id)}&pin=${encodeURIComponent(targetLine.passcode)}&name=${encodeURIComponent(targetLine.name)}`;
     navigator.clipboard.writeText(url.toString());
     setCopiedLineId(targetLine.id);
     setTimeout(() => setCopiedLineId(null), 2000);
+  };
+
+  const handleEnablePush = async () => {
+    const ok = await PushNotificationManager.subscribeToLine(lineId);
+    if (ok) {
+      setIsPushEnabled(true);
+    }
   };
 
   // Initial Setup Save Button
@@ -362,7 +388,9 @@ export const App: React.FC = () => {
 
   const getInviteUrl = () => {
     const url = new URL(window.location.href);
-    url.hash = `line=${encodeURIComponent(lineId)}&pin=${encodeURIComponent(passcode)}`;
+    const currentLine = savedLines.find((l) => l.id === lineId);
+    const nameParam = currentLine ? `&name=${encodeURIComponent(currentLine.name)}` : '';
+    url.hash = `line=${encodeURIComponent(lineId)}&pin=${encodeURIComponent(passcode)}${nameParam}`;
     return url.toString();
   };
 
@@ -626,7 +654,7 @@ export const App: React.FC = () => {
               Tunnel ID: <span style={{ fontFamily: 'monospace', color: '#249c6f' }}>{lineId.substring(0, 8)}••••••••</span>
             </p>
 
-            <div className="line-status-box">
+            <div className="line-status-box" style={{ marginBottom: '0.85rem' }}>
               <span style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.6)' }}>Partner Line Status:</span>
               <div className="partner-status-pill">
                 <span className={`status-dot ${isPeerOnline ? '' : 'offline'}`} />
@@ -634,6 +662,42 @@ export const App: React.FC = () => {
                   {isPeerOnline ? 'Partner Online' : 'Partner Standby'}
                 </span>
               </div>
+            </div>
+
+            {/* Background Ringing Push Notification Status Banner */}
+            <div
+              style={{
+                background: isPushEnabled ? 'rgba(36, 156, 111, 0.12)' : 'rgba(255, 255, 255, 0.04)',
+                border: `1px solid ${isPushEnabled ? '#249c6f' : 'rgba(255, 255, 255, 0.12)'}`,
+                borderRadius: '8px',
+                padding: '0.65rem 0.85rem',
+                marginBottom: '1.25rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                textAlign: 'left',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <Bell size={18} color={isPushEnabled ? '#249c6f' : 'rgba(255, 255, 255, 0.6)'} />
+                <div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#ffffff' }}>
+                    {isPushEnabled ? 'Background Ringing Active' : 'Background Call Ringing'}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'rgba(255, 255, 255, 0.55)' }}>
+                    {isPushEnabled ? 'Phone will ring even if browser is closed' : 'Enable to ring phone when app is closed'}
+                  </div>
+                </div>
+              </div>
+              {!isPushEnabled && (
+                <button
+                  className="btn btn-primary"
+                  style={{ fontSize: '0.74rem', padding: '0.35rem 0.7rem' }}
+                  onClick={handleEnablePush}
+                >
+                  Enable
+                </button>
+              )}
             </div>
 
             <button

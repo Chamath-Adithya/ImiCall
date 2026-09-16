@@ -3,12 +3,26 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
+import webpush from 'web-push';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DIST_DIR = path.resolve(__dirname, '../dist');
+const PUBLIC_DIR = path.resolve(__dirname, '../public');
 
 const PORT = process.env.PORT || 8080;
+
+const VAPID_PUBLIC_KEY = 'BOuJcOk-mNS1r3WsBBtmDY5wnqKSdPmbcUe-_bv7I8h9ptc3ILFsWJ8iko0iY3qIhQEeIRH0T_wSu1f3Z7_7WsA';
+const VAPID_PRIVATE_KEY = 'Q8u9SokW2n1Ykeimkk2qEOrTtDxQiaa-a_SINIxEJ9g';
+
+webpush.setVapidDetails(
+  'mailto:support@imicall.app',
+  VAPID_PUBLIC_KEY,
+  VAPID_PRIVATE_KEY
+);
+
+// Map of roomId -> Map of endpoint -> subscription
+const pushSubscriptions = new Map();
 
 const MIME_TYPES = {
   '.html': 'text/html',
@@ -27,7 +41,8 @@ const MIME_TYPES = {
 const server = http.createServer((req, res) => {
   // CORS & Security headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -40,6 +55,54 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', uptime: process.uptime(), rooms: rooms.size }));
     return;
+  }
+
+  // VAPID public key endpoint
+  if (req.url === '/api/vapid-public-key') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ publicKey: VAPID_PUBLIC_KEY }));
+    return;
+  }
+
+  // Push Subscription registration
+  if (req.method === 'POST' && req.url === '/api/push-subscribe') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { roomId, subscription } = JSON.parse(body);
+        if (roomId && subscription && subscription.endpoint) {
+          const roomKey = roomId.trim().toLowerCase();
+          if (!pushSubscriptions.has(roomKey)) {
+            pushSubscriptions.set(roomKey, new Map());
+          }
+          pushSubscriptions.get(roomKey).set(subscription.endpoint, subscription);
+          console.log(`[Push] Registered subscription for room: ${roomKey}`);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      }
+    });
+    return;
+  }
+
+  // Serve service worker sw.js directly if requested
+  if (req.url === '/sw.js') {
+    const swPath = fs.existsSync(path.join(DIST_DIR, 'sw.js'))
+      ? path.join(DIST_DIR, 'sw.js')
+      : path.join(PUBLIC_DIR, 'sw.js');
+    if (fs.existsSync(swPath)) {
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript',
+        'Service-Worker-Allowed': '/',
+        'Cache-Control': 'no-cache',
+      });
+      fs.createReadStream(swPath).pipe(res);
+      return;
+    }
   }
 
   // Static file serving from dist/
@@ -79,7 +142,7 @@ const server = http.createServer((req, res) => {
   }
 
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('ImiCall Signaling Server (Ultra-Low Latency WebSocket)');
+  res.end('ImiCall Signaling Server (Ultra-Low Latency WebSocket & Web Push)');
 });
 
 const wss = new WebSocketServer({ server });
@@ -127,7 +190,30 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      // Forward all signaling messages (call-ring, call-accept, call-decline, call-cancel, offer, answer, candidate, profile-change)
+      // If call-ring, send background Web Push notification to partner even if browser is closed!
+      if (type === 'call-ring' && currentRoom) {
+        const roomKey = currentRoom.trim().toLowerCase();
+        const subs = pushSubscriptions.get(roomKey);
+        if (subs && subs.size > 0) {
+          const pushPayload = JSON.stringify({
+            title: '📞 Incoming Call — ImiCall',
+            body: 'Your partner is calling on your dedicated line. Tap to answer!',
+            lineId: roomKey,
+            url: `/#line=${encodeURIComponent(roomKey)}&pin=2023`,
+          });
+
+          for (const [endpoint, sub] of subs.entries()) {
+            webpush.sendNotification(sub, pushPayload, { TTL: 60, urgency: 'high' })
+              .catch((err) => {
+                if (err.statusCode === 410 || err.statusCode === 404) {
+                  subs.delete(endpoint);
+                }
+              });
+          }
+        }
+      }
+
+      // Forward all signaling messages (call-ring, call-accept, call-decline, call-cancel, call-ended, offer, answer, candidate, profile-change)
       if (currentRoom && rooms.has(currentRoom)) {
         const roomClients = rooms.get(currentRoom);
         for (const client of roomClients) {
