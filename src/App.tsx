@@ -23,6 +23,8 @@ import {
   BookUser,
   Search,
   UserCheck,
+  Camera,
+  Clipboard,
 } from 'lucide-react';
 import { SignalProfile, NetworkStats, ChatMessage, CallState, SIGNAL_PROFILES, REQUIRED_PASSCODE } from './core/types';
 import { WebRTCClient } from './core/webrtcClient';
@@ -31,6 +33,7 @@ import { AudioWaveform } from './components/AudioWaveform';
 import { DiagnosticsModal } from './components/DiagnosticsModal';
 import { QrModal } from './components/QrModal';
 import { ChatDrawer } from './components/ChatDrawer';
+import { CameraQrScanner } from './components/CameraQrScanner';
 
 export interface SavedLine {
   id: string;
@@ -73,9 +76,14 @@ export const App: React.FC = () => {
   // Modals & Phone Book Management
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
   const [isQrOpen, setIsQrOpen] = useState<boolean>(false);
+  const [isQrScannerOpen, setIsQrScannerOpen] = useState<boolean>(false);
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isAddContactModalOpen, setIsAddContactModalOpen] = useState<boolean>(false);
+  const [addContactTab, setAddContactTab] = useState<'create' | 'paste'>('create');
+  const [pastedInviteInput, setPastedInviteInput] = useState<string>('');
+  const [pastedContactNickname, setPastedContactNickname] = useState<string>('');
+  const [serverPublicUrl, setServerPublicUrl] = useState<string>('');
   const [newContactName, setNewContactName] = useState<string>('');
   const [myDisplayName, setMyDisplayName] = useState<string>(() => localStorage.getItem(MY_NAME_KEY) || '');
   const [shareContact, setShareContact] = useState<SavedLine | null>(null);
@@ -117,6 +125,17 @@ export const App: React.FC = () => {
       setIsPushEnabled(true);
     }
 
+    // Fetch public tunnel URL and server config
+    fetch('/api/config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.publicUrl) {
+          setServerPublicUrl(data.publicUrl);
+        }
+      })
+      .catch(() => {});
+
+    // Parse URL params / hash
     const searchParams = new URLSearchParams(window.location.search);
     const hash = window.location.hash.substring(1);
     const hashParams = new URLSearchParams(hash);
@@ -164,10 +183,38 @@ export const App: React.FC = () => {
       }
     }
 
+    // Check for deleted connections from server to keep mutual deletion in sync
+    fetch('/api/deleted-connections')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && Array.isArray(data.deletedRooms) && data.deletedRooms.length > 0) {
+          const delSet = new Set(data.deletedRooms.map((r: string) => r.toLowerCase()));
+          setSavedLines((prev) => {
+            const cleaned = prev.filter((l) => !delSet.has(l.id.toLowerCase()));
+            if (cleaned.length !== prev.length) {
+              if (cleaned.length === 0) {
+                const freshId = generateRandomLineId();
+                const freshLine: SavedLine = {
+                  id: freshId,
+                  name: 'Primary Partner',
+                  passcode: REQUIRED_PASSCODE,
+                  createdAt: Date.now(),
+                };
+                cleaned.push(freshLine);
+              }
+              saveLinesList(cleaned, cleaned[0]?.id || '');
+              return cleaned;
+            }
+            return prev;
+          });
+        }
+      })
+      .catch(() => {});
+
     // If incoming invite URL hash/params
     if (hashLine) {
       const pinToUse = hashPin || REQUIRED_PASSCODE;
-      const existing = currentList.find((l) => l.id === hashLine);
+      const existing = currentList.find((l) => l.id.toLowerCase() === hashLine.toLowerCase());
 
       if (existing) {
         saveLinesList(currentList, existing.id);
@@ -179,19 +226,22 @@ export const App: React.FC = () => {
         return;
       }
 
-      // If sender name is specified in the link, display friendly invitation modal
-      if (hashFrom) {
+      // Incoming connection invitation from partner (QR scan or shared invite link)
+      if (hashFrom || hashParams.has('connect') || searchParams.has('connect')) {
+        const senderDisplayName = hashFrom || 'Partner';
         const mySavedName = localStorage.getItem(MY_NAME_KEY) || hashTo || '';
         setPendingInvite({
           lineId: hashLine,
-          senderName: hashFrom,
+          senderName: senderDisplayName,
           myName: mySavedName,
           pin: pinToUse,
         });
-        setPendingInviteContactName(hashFrom);
+        setPendingInviteContactName(senderDisplayName);
         setPendingInviteMyName(mySavedName);
+        setSavedLines(currentList);
+        return;
       } else {
-        // Auto-save connection (for direct URL or test script compatibility)
+        // Direct line URL (e.g. #line=...&pin=...) -> Auto-save & connect directly
         const lineNameToUse = `Contact ${currentList.length + 1}`;
         currentList.push({
           id: hashLine,
@@ -340,6 +390,34 @@ export const App: React.FC = () => {
       setSelectedProfile(newProfile);
     };
 
+    client.onContactDeleted = (deletedRoomId: string) => {
+      const normDeleted = deletedRoomId.trim().toLowerCase();
+      setSavedLines((prev) => {
+        const remaining = prev.filter((l) => l.id.trim().toLowerCase() !== normDeleted);
+        let nextActive = '';
+        if (remaining.length === 0) {
+          const freshId = generateRandomLineId();
+          const freshLine: SavedLine = {
+            id: freshId,
+            name: 'Primary Partner',
+            passcode: REQUIRED_PASSCODE,
+            createdAt: Date.now(),
+          };
+          remaining.push(freshLine);
+          nextActive = freshId;
+        } else {
+          nextActive = remaining[0].id;
+        }
+        localStorage.setItem(STORAGE_LINES_KEY, JSON.stringify(remaining));
+        localStorage.setItem(ACTIVE_LINE_ID_KEY, nextActive);
+        setLineId(nextActive);
+        setPasscode(remaining[0].passcode);
+        connectSavedLine(nextActive, remaining[0].passcode);
+        return remaining;
+      });
+      showToast('⚠️ Contact connection was removed by partner.');
+    };
+
     client.onError = (err) => {
       setErrorMessage(err);
     };
@@ -405,6 +483,90 @@ export const App: React.FC = () => {
     showToast(`Contact "${nameToUse}" added! Share link to connect.`);
   };
 
+  // Import connection from pasted link or raw room ID
+  const handleImportPastedLink = () => {
+    const raw = pastedInviteInput.trim();
+    if (!raw) {
+      setErrorMessage('Please enter an invite link or Room ID.');
+      return;
+    }
+
+    let parsedLineId = '';
+    let parsedSender = '';
+    let parsedPin = REQUIRED_PASSCODE;
+
+    try {
+      if (raw.includes('#') || raw.includes('?')) {
+        const dummyBase = 'http://dummy.com/';
+        const urlObj = new URL(raw.startsWith('http') ? raw : dummyBase + raw);
+        const hashParams = new URLSearchParams(urlObj.hash.replace(/^#/, ''));
+        const searchParams = urlObj.searchParams;
+
+        parsedLineId =
+          hashParams.get('connect') ||
+          hashParams.get('line') ||
+          hashParams.get('room') ||
+          searchParams.get('connect') ||
+          searchParams.get('line') ||
+          searchParams.get('room') ||
+          '';
+
+        parsedSender =
+          hashParams.get('from') ||
+          hashParams.get('caller') ||
+          hashParams.get('name') ||
+          searchParams.get('from') ||
+          searchParams.get('caller') ||
+          searchParams.get('name') ||
+          '';
+
+        parsedPin = hashParams.get('pin') || searchParams.get('pin') || REQUIRED_PASSCODE;
+      }
+    } catch (e) {}
+
+    if (!parsedLineId) {
+      if (/^[a-zA-Z0-9_-]{3,60}$/.test(raw)) {
+        parsedLineId = raw;
+      }
+    }
+
+    if (!parsedLineId) {
+      setErrorMessage('Invalid invite link or Room ID. Please paste a valid link or code.');
+      return;
+    }
+
+    const contactName =
+      pastedContactNickname.trim() ||
+      parsedSender ||
+      `Contact ${savedLines.length + 1}`;
+
+    const newContact: SavedLine = {
+      id: parsedLineId,
+      name: contactName,
+      passcode: parsedPin,
+      createdAt: Date.now(),
+    };
+
+    const updated = [newContact, ...savedLines.filter((l) => l.id.toLowerCase() !== parsedLineId.toLowerCase())];
+    saveLinesList(updated, parsedLineId);
+    setLineId(parsedLineId);
+    setPasscode(parsedPin);
+    setHasSavedLine(true);
+    setIsAddContactModalOpen(false);
+    setPastedInviteInput('');
+    setPastedContactNickname('');
+    connectSavedLine(parsedLineId, parsedPin);
+    showToast(`Added "${contactName}" to your Phone Book!`);
+  };
+
+  const handleScannedQrResult = (scannedText: string) => {
+    setIsQrScannerOpen(false);
+    setPastedInviteInput(scannedText);
+    setAddContactTab('paste');
+    setIsAddContactModalOpen(true);
+    showToast('QR Code captured! Review and save to Phone Book.');
+  };
+
   // Accept incoming invite flow
   const handleAcceptPendingInvite = () => {
     if (!pendingInvite) return;
@@ -421,7 +583,7 @@ export const App: React.FC = () => {
       createdAt: Date.now(),
     };
 
-    const updated = [newContact, ...savedLines.filter((l) => l.id !== pendingInvite.lineId)];
+    const updated = [newContact, ...savedLines.filter((l) => l.id.toLowerCase() !== pendingInvite.lineId.toLowerCase())];
     saveLinesList(updated, pendingInvite.lineId);
     setLineId(pendingInvite.lineId);
     setPasscode(pendingInvite.pin || REQUIRED_PASSCODE);
@@ -435,29 +597,49 @@ export const App: React.FC = () => {
 
   const handleDeleteLine = (idToDelete: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (savedLines.length <= 1) {
-      setErrorMessage('You must keep at least one contact in your Phone Book.');
-      return;
-    }
+
+    // 1. Notify partner through WebRTC WebSocket signaling
+    clientRef.current?.notifyContactDeleted(idToDelete);
+
+    // 2. Persist deletion on signaling server and clear Push subscriptions
+    fetch('/api/delete-connection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomId: idToDelete }),
+    }).catch(() => {});
+
+    // 3. Update locally
     const updated = savedLines.filter((l) => l.id !== idToDelete);
     let nextActive = lineId;
-    if (lineId === idToDelete) {
+    if (updated.length === 0) {
+      const freshId = generateRandomLineId();
+      const freshLine: SavedLine = {
+        id: freshId,
+        name: 'Primary Partner',
+        passcode: REQUIRED_PASSCODE,
+        createdAt: Date.now(),
+      };
+      updated.push(freshLine);
+      nextActive = freshId;
+    } else if (lineId === idToDelete) {
       nextActive = updated[0].id;
-      setLineId(updated[0].id);
-      setPasscode(updated[0].passcode);
-      localStorage.setItem(ACTIVE_LINE_ID_KEY, updated[0].id);
-      connectSavedLine(updated[0].id, updated[0].passcode);
     }
+
+    setLineId(nextActive);
+    const activeObj = updated.find((l) => l.id === nextActive) || updated[0];
+    setPasscode(activeObj.passcode);
     saveLinesList(updated, nextActive);
-    showToast('Contact removed from Phone Book.');
+    connectSavedLine(nextActive, activeObj.passcode);
+    showToast('Contact removed from Phone Book and partner notified.');
   };
 
   const getContactInviteUrl = (contact: SavedLine) => {
-    const url = new URL(window.location.href);
+    let baseUrl = window.location.origin;
+    if (serverPublicUrl && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+      baseUrl = serverPublicUrl;
+    }
     const myStoredName = localStorage.getItem(MY_NAME_KEY) || myDisplayName || 'Partner';
-    url.search = '';
-    url.hash = `connect=${encodeURIComponent(contact.id)}&from=${encodeURIComponent(myStoredName)}&to=${encodeURIComponent(contact.name)}&pin=${encodeURIComponent(contact.passcode)}`;
-    return url.toString();
+    return `${baseUrl}/#connect=${encodeURIComponent(contact.id)}&from=${encodeURIComponent(myStoredName)}&to=${encodeURIComponent(contact.name)}&pin=${encodeURIComponent(contact.passcode)}`;
   };
 
   const getWhatsAppShareUrl = (contact: SavedLine) => {
@@ -782,50 +964,142 @@ export const App: React.FC = () => {
       {/* ADD CONTACT MODAL */}
       {isAddContactModalOpen && (
         <div className="modal-backdrop" onClick={() => setIsAddContactModalOpen(false)}>
-          <div className="modal-card" style={{ maxWidth: '440px' }} onClick={(e) => e.stopPropagation()}>
+          <div className="modal-card" style={{ maxWidth: '460px' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: '#ffffff', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Plus size={18} color="#249c6f" /> Add New Contact
+                <Plus size={18} color="#249c6f" /> Add Connection
               </h3>
               <button className="btn btn-secondary" style={{ padding: '0.35rem 0.55rem' }} onClick={() => setIsAddContactModalOpen(false)}>
                 ✕
               </button>
             </div>
 
-            <p style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '1.25rem' }}>
-              Create a dedicated secure calling route and share the connection link with your partner.
-            </p>
-
-            <div className="input-group" style={{ marginBottom: '1rem' }}>
-              <label className="input-label">Contact Name (Who are you adding?)</label>
-              <input
-                type="text"
-                className="input-field"
-                value={newContactName}
-                onChange={(e) => setNewContactName(e.target.value)}
-                placeholder="e.g. Nadeesha, Mom, Office"
-                autoFocus
-              />
-            </div>
-
-            <div className="input-group" style={{ marginBottom: '1.5rem' }}>
-              <label className="input-label">Your Name (How you will appear to them)</label>
-              <input
-                type="text"
-                className="input-field"
-                value={myDisplayName}
-                onChange={(e) => setMyDisplayName(e.target.value)}
-                placeholder="e.g. Chamath"
-              />
-            </div>
-
-            <button
-              className="btn btn-primary btn-full"
-              style={{ padding: '0.95rem', fontSize: '1rem', fontWeight: 700 }}
-              onClick={handleCreateContact}
+            {/* Tab Navigation */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '0.4rem',
+                marginBottom: '1.25rem',
+                background: '#111111',
+                padding: '0.3rem',
+                borderRadius: '8px',
+              }}
             >
-              <Plus size={18} /> Create & Get Connection Link
-            </button>
+              <button
+                className={`btn ${addContactTab === 'create' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ padding: '0.55rem', fontSize: '0.85rem', fontWeight: 600 }}
+                onClick={() => setAddContactTab('create')}
+              >
+                <Plus size={15} /> Create Route
+              </button>
+              <button
+                className={`btn ${addContactTab === 'paste' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ padding: '0.55rem', fontSize: '0.85rem', fontWeight: 600 }}
+                onClick={() => setAddContactTab('paste')}
+              >
+                <Clipboard size={15} /> Paste Link / Code
+              </button>
+            </div>
+
+            {addContactTab === 'create' ? (
+              <>
+                <p style={{ fontSize: '0.84rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '1.15rem' }}>
+                  Generate an encrypted tunnel and share the connection link or QR with your partner.
+                </p>
+
+                <div className="input-group" style={{ marginBottom: '1rem' }}>
+                  <label className="input-label">Contact Name (Who are you adding?)</label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    value={newContactName}
+                    onChange={(e) => setNewContactName(e.target.value)}
+                    placeholder="e.g. Nadeesha, Mom, Office"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="input-group" style={{ marginBottom: '1.35rem' }}>
+                  <label className="input-label">Your Name (How you will appear to them)</label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    value={myDisplayName}
+                    onChange={(e) => setMyDisplayName(e.target.value)}
+                    placeholder="e.g. Chamath"
+                  />
+                </div>
+
+                <button
+                  className="btn btn-primary btn-full"
+                  style={{ padding: '0.95rem', fontSize: '1rem', fontWeight: 700, marginBottom: '0.65rem' }}
+                  onClick={handleCreateContact}
+                >
+                  <Plus size={18} /> Create & Get Connection Link
+                </button>
+
+                <button
+                  className="btn btn-secondary btn-full"
+                  style={{ padding: '0.75rem', fontSize: '0.86rem' }}
+                  onClick={() => {
+                    setIsAddContactModalOpen(false);
+                    setIsQrScannerOpen(true);
+                  }}
+                >
+                  <Camera size={16} /> Scan Partner's QR Code
+                </button>
+              </>
+            ) : (
+              <>
+                <p style={{ fontSize: '0.84rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '1.15rem' }}>
+                  Paste an invite link, URL, or room code sent by your partner to instantly link both devices.
+                </p>
+
+                <div className="input-group" style={{ marginBottom: '1rem' }}>
+                  <label className="input-label">Invite Link or Room Code</label>
+                  <textarea
+                    className="input-field"
+                    rows={3}
+                    style={{ resize: 'none', fontSize: '0.86rem' }}
+                    value={pastedInviteInput}
+                    onChange={(e) => setPastedInviteInput(e.target.value)}
+                    placeholder="Paste link (e.g. https://.../#connect=line-xxxx) or Room ID (line-xxxx-xxxx)"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="input-group" style={{ marginBottom: '1.35rem' }}>
+                  <label className="input-label">Contact Nickname (Optional)</label>
+                  <input
+                    type="text"
+                    className="input-field"
+                    value={pastedContactNickname}
+                    onChange={(e) => setPastedContactNickname(e.target.value)}
+                    placeholder="e.g. Alex, Home, Work"
+                  />
+                </div>
+
+                <button
+                  className="btn btn-primary btn-full"
+                  style={{ padding: '0.95rem', fontSize: '1rem', fontWeight: 700, marginBottom: '0.65rem' }}
+                  onClick={handleImportPastedLink}
+                >
+                  <UserCheck size={18} /> Save to Phone Book & Connect
+                </button>
+
+                <button
+                  className="btn btn-secondary btn-full"
+                  style={{ padding: '0.75rem', fontSize: '0.86rem' }}
+                  onClick={() => {
+                    setIsAddContactModalOpen(false);
+                    setIsQrScannerOpen(true);
+                  }}
+                >
+                  <Camera size={16} /> Scan QR Code with Camera
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -1118,16 +1392,14 @@ export const App: React.FC = () => {
                         <Share2 size={14} />
                       </button>
 
-                      {savedLines.length > 1 && (
-                        <button
-                          className="btn btn-danger"
-                          style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}
-                          onClick={(e) => handleDeleteLine(contact.id, e)}
-                          title="Delete Contact"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      )}
+                      <button
+                        className="btn btn-danger"
+                        style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}
+                        onClick={(e) => handleDeleteLine(contact.id, e)}
+                        title="Delete Contact"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   </div>
                 );
@@ -1460,6 +1732,13 @@ export const App: React.FC = () => {
         onClose={() => setIsChatOpen(false)}
         messages={chatMessages}
         onSendMessage={handleSendMessage}
+      />
+
+      {/* In-App Camera QR Scanner Modal */}
+      <CameraQrScanner
+        isOpen={isQrScannerOpen}
+        onClose={() => setIsQrScannerOpen(false)}
+        onScan={handleScannedQrResult}
       />
     </div>
   );

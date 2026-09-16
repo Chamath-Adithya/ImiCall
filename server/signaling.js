@@ -25,6 +25,52 @@ webpush.setVapidDetails(
 const pushSubscriptions = new Map();
 const SUBSCRIPTIONS_FILE = path.resolve(__dirname, 'subscriptions.json');
 
+// Set of deleted rooms (mutual deletion persistence)
+const deletedRooms = new Set();
+const DELETED_ROOMS_FILE = path.resolve(__dirname, 'deleted_rooms.json');
+
+function loadDeletedRooms() {
+  if (fs.existsSync(DELETED_ROOMS_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(DELETED_ROOMS_FILE, 'utf8'));
+      if (Array.isArray(data)) {
+        for (const id of data) {
+          deletedRooms.add(id.toLowerCase());
+        }
+      }
+      console.log(`[Signaling] Loaded ${deletedRooms.size} deleted connections from disk.`);
+    } catch (e) {
+      console.warn('[Signaling] Could not read deleted_rooms.json:', e);
+    }
+  }
+}
+
+function saveDeletedRooms() {
+  try {
+    fs.writeFileSync(DELETED_ROOMS_FILE, JSON.stringify(Array.from(deletedRooms), null, 2), 'utf8');
+  } catch (e) {
+    console.warn('[Signaling] Could not save deleted_rooms.json:', e);
+  }
+}
+
+function getPublicUrl() {
+  if (process.env.PUBLIC_URL && process.env.PUBLIC_URL.startsWith('http')) {
+    return process.env.PUBLIC_URL.replace(/\/+$/, '');
+  }
+  const tunnelFile = path.resolve(__dirname, 'tunnel_url.txt');
+  if (fs.existsSync(tunnelFile)) {
+    try {
+      const url = fs.readFileSync(tunnelFile, 'utf8').trim();
+      if (url.startsWith('http')) {
+        return url.replace(/\/+$/, '');
+      }
+    } catch (e) {
+      // Ignore
+    }
+  }
+  return '';
+}
+
 function loadSubscriptions() {
   if (fs.existsSync(SUBSCRIPTIONS_FILE)) {
     try {
@@ -52,6 +98,7 @@ function saveSubscriptions() {
 }
 
 loadSubscriptions();
+loadDeletedRooms();
 
 const MIME_TYPES = {
   '.html': 'text/html',
@@ -83,6 +130,62 @@ const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', uptime: process.uptime(), rooms: rooms.size }));
+    return;
+  }
+
+  // Config endpoint (public tunnel URL and VAPID key)
+  if (req.url === '/api/config') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      publicUrl: getPublicUrl(),
+      vapidPublicKey: VAPID_PUBLIC_KEY
+    }));
+    return;
+  }
+
+  // Get deleted connections list (for offline peer sync)
+  if (req.url === '/api/deleted-connections') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ deletedRooms: Array.from(deletedRooms) }));
+    return;
+  }
+
+  // Delete connection endpoint (mutual deletion persistence & push cleanup)
+  if (req.method === 'POST' && req.url === '/api/delete-connection') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { roomId } = JSON.parse(body);
+        if (roomId) {
+          const roomKey = roomId.trim().toLowerCase();
+          deletedRooms.add(roomKey);
+          saveDeletedRooms();
+          pushSubscriptions.delete(roomKey);
+          saveSubscriptions();
+
+          // Broadcast to any active clients in this room
+          const rClients = rooms.get(roomId) || rooms.get(roomKey);
+          if (rClients) {
+            for (const client of rClients) {
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify({
+                  type: 'contact-deleted',
+                  roomId: roomKey,
+                  payload: { roomId: roomKey }
+                }));
+              }
+            }
+          }
+          console.log(`[Signaling] Mutual deletion processed for: ${roomKey}`);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      }
+    });
     return;
   }
 
@@ -190,6 +293,12 @@ wss.on('connection', (ws) => {
 
       if (type === 'join') {
         currentRoom = roomId;
+        const roomKey = roomId.trim().toLowerCase();
+        if (deletedRooms.has(roomKey)) {
+          deletedRooms.delete(roomKey);
+          saveDeletedRooms();
+        }
+
         if (!rooms.has(roomId)) {
           rooms.set(roomId, new Set());
         }
@@ -218,6 +327,18 @@ wss.on('connection', (ws) => {
           }
         }
         return;
+      }
+
+      // Handle contact-deleted mutual sync
+      if (type === 'contact-deleted') {
+        const targetRoom = (roomId || payload?.roomId || currentRoom || '').trim().toLowerCase();
+        if (targetRoom) {
+          deletedRooms.add(targetRoom);
+          saveDeletedRooms();
+          pushSubscriptions.delete(targetRoom);
+          saveSubscriptions();
+          console.log(`[Signaling] WebSocket contact-deleted processed for: ${targetRoom}`);
+        }
       }
 
       // If call-ring, send background Web Push notification to partner even if browser is closed!

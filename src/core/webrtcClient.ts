@@ -36,6 +36,7 @@ export class WebRTCClient {
   public onProfileChange: ((profile: SignalProfile) => void) | null = null;
   public onError: ((error: string) => void) | null = null;
   public onPeerStatusChange: ((inRoom: boolean) => void) | null = null;
+  public onContactDeleted: ((roomId: string) => void) | null = null;
 
   constructor(options: WebRTCClientOptions) {
     this.options = options;
@@ -195,10 +196,29 @@ export class WebRTCClient {
         this.setState('waiting');
         break;
 
+      case 'contact-deleted':
+        this.soundManager.stopAll();
+        this.cleanupCallSession();
+        if (this.onContactDeleted) {
+          const target = msg.roomId || msg.payload?.roomId || this.options.roomId;
+          this.onContactDeleted(target);
+        }
+        break;
+
       case 'room-full':
         this.setState('error');
         if (this.onError) this.onError('Room is already full (maximum 2 participants).');
         break;
+    }
+  }
+
+  notifyContactDeleted(roomId: string) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'contact-deleted',
+        roomId,
+        payload: { roomId },
+      }));
     }
   }
 

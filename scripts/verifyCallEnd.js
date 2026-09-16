@@ -27,6 +27,7 @@ async function testCallEndReturnToMain() {
 
     await page1.waitForSelector('button.btn-primary');
     await page2.waitForSelector('button.btn-primary');
+    await new Promise((r) => setTimeout(r, 1200));
 
     console.log('📞 Peer 1 dialing Peer 2...');
     const callBtns1 = await page1.$$('button.btn-primary');
