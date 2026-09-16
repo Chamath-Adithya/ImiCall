@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "start": "node server/signaling.js",
+    "start": "npm run build && node server/signaling.js",
     "server": "node server/signaling.js",
     "test": "vitest run"
   },
