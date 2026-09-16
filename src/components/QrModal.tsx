@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import QRCode from 'qrcode';
 import { X, QrCode as QrIcon, Copy, Check } from 'lucide-react';
 
 interface QrModalProps {
@@ -13,18 +12,27 @@ export const QrModal: React.FC<QrModalProps> = ({ isOpen, onClose, inviteUrl }) 
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
+    let isMounted = true;
     if (isOpen && inviteUrl) {
-      QRCode.toDataURL(inviteUrl, {
-        width: 260,
-        margin: 2,
-        color: {
-          dark: '#181818',
-          light: '#ffffff',
-        },
-      })
-        .then((url) => setQrSrc(url))
-        .catch((err) => console.error('QR generation failed:', err));
+      import('qrcode').then((module) => {
+        const QRCode = module.default || module;
+        QRCode.toDataURL(inviteUrl, {
+          width: 260,
+          margin: 2,
+          color: {
+            dark: '#181818',
+            light: '#ffffff',
+          },
+        })
+          .then((url: string) => {
+            if (isMounted) setQrSrc(url);
+          })
+          .catch((err: any) => console.error('QR generation failed:', err));
+      }).catch((err) => console.error('Failed to load QR module:', err));
     }
+    return () => {
+      isMounted = false;
+    };
   }, [isOpen, inviteUrl]);
 
   if (!isOpen) return null;

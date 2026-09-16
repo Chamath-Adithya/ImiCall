@@ -30,10 +30,19 @@ import { SignalProfile, NetworkStats, ChatMessage, CallState, SIGNAL_PROFILES, R
 import { WebRTCClient } from './core/webrtcClient';
 import { PushNotificationManager } from './core/pushManager';
 import { AudioWaveform } from './components/AudioWaveform';
-import { DiagnosticsModal } from './components/DiagnosticsModal';
-import { QrModal } from './components/QrModal';
-import { ChatDrawer } from './components/ChatDrawer';
-import { CameraQrScanner } from './components/CameraQrScanner';
+
+const DiagnosticsModal = React.lazy(() =>
+  import('./components/DiagnosticsModal').then((m) => ({ default: m.DiagnosticsModal }))
+);
+const QrModal = React.lazy(() =>
+  import('./components/QrModal').then((m) => ({ default: m.QrModal }))
+);
+const ChatDrawer = React.lazy(() =>
+  import('./components/ChatDrawer').then((m) => ({ default: m.ChatDrawer }))
+);
+const CameraQrScanner = React.lazy(() =>
+  import('./components/CameraQrScanner').then((m) => ({ default: m.CameraQrScanner }))
+);
 
 export interface SavedLine {
   id: string;
@@ -123,6 +132,12 @@ export const App: React.FC = () => {
     PushNotificationManager.registerServiceWorker();
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       setIsPushEnabled(true);
+    }
+
+    // Auto-detect 2G / Slow cellular connection and switch audio profile to ultra-low bandwidth (10 kbps)
+    const conn = (navigator as any).connection;
+    if (conn && (conn.effectiveType === '2g' || conn.effectiveType === 'slow-2g' || conn.saveData)) {
+      setSelectedProfile('extreme');
     }
 
     // Fetch public tunnel URL and server config
@@ -1709,37 +1724,44 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Diagnostics Modal */}
-      <DiagnosticsModal
-        isOpen={isDiagnosticsOpen}
-        onClose={() => setIsDiagnosticsOpen(false)}
-        stats={networkStats}
-        profile={selectedProfile}
-        isE2eeActive={true}
-        roomId={lineId}
-      />
+      {/* On-Demand Lazy Loaded Modals for Instant 2G Loading */}
+      <React.Suspense fallback={null}>
+        {isDiagnosticsOpen && (
+          <DiagnosticsModal
+            isOpen={isDiagnosticsOpen}
+            onClose={() => setIsDiagnosticsOpen(false)}
+            stats={networkStats}
+            profile={selectedProfile}
+            isE2eeActive={true}
+            roomId={lineId}
+          />
+        )}
 
-      {/* QR Code Modal */}
-      <QrModal
-        isOpen={isQrOpen}
-        onClose={() => setIsQrOpen(false)}
-        inviteUrl={activeContact ? getContactInviteUrl(activeContact) : window.location.href}
-      />
+        {isQrOpen && (
+          <QrModal
+            isOpen={isQrOpen}
+            onClose={() => setIsQrOpen(false)}
+            inviteUrl={activeContact ? getContactInviteUrl(activeContact) : window.location.href}
+          />
+        )}
 
-      {/* Chat Drawer */}
-      <ChatDrawer
-        isOpen={isChatOpen}
-        onClose={() => setIsChatOpen(false)}
-        messages={chatMessages}
-        onSendMessage={handleSendMessage}
-      />
+        {isChatOpen && (
+          <ChatDrawer
+            isOpen={isChatOpen}
+            onClose={() => setIsChatOpen(false)}
+            messages={chatMessages}
+            onSendMessage={handleSendMessage}
+          />
+        )}
 
-      {/* In-App Camera QR Scanner Modal */}
-      <CameraQrScanner
-        isOpen={isQrScannerOpen}
-        onClose={() => setIsQrScannerOpen(false)}
-        onScan={handleScannedQrResult}
-      />
+        {isQrScannerOpen && (
+          <CameraQrScanner
+            isOpen={isQrScannerOpen}
+            onClose={() => setIsQrScannerOpen(false)}
+            onScan={handleScannedQrResult}
+          />
+        )}
+      </React.Suspense>
     </div>
   );
 };

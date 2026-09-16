@@ -1,6 +1,7 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
+import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import webpush from 'web-push';
@@ -113,6 +114,33 @@ const MIME_TYPES = {
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
 };
+
+function sendCompressedFile(filePath, contentType, isHtml, req, res) {
+  const ext = path.extname(filePath).toLowerCase();
+  const acceptEncoding = req.headers['accept-encoding'] || '';
+  const isCompressible = ['.html', '.js', '.css', '.svg', '.json', '.txt'].includes(ext);
+
+  const headers = {
+    'Content-Type': contentType,
+    'Cache-Control': isHtml ? 'no-cache' : 'public, max-age=31536000, immutable',
+    'Vary': 'Accept-Encoding',
+  };
+
+  const rawStream = fs.createReadStream(filePath);
+
+  if (isCompressible && acceptEncoding.includes('gzip')) {
+    headers['Content-Encoding'] = 'gzip';
+    res.writeHead(200, headers);
+    rawStream.pipe(zlib.createGzip({ level: 9 })).pipe(res);
+  } else if (isCompressible && acceptEncoding.includes('deflate')) {
+    headers['Content-Encoding'] = 'deflate';
+    res.writeHead(200, headers);
+    rawStream.pipe(zlib.createDeflate()).pipe(res);
+  } else {
+    res.writeHead(200, headers);
+    rawStream.pipe(res);
+  }
+}
 
 const server = http.createServer((req, res) => {
   // CORS & Security headers
@@ -228,12 +256,7 @@ const server = http.createServer((req, res) => {
       ? path.join(DIST_DIR, 'sw.js')
       : path.join(PUBLIC_DIR, 'sw.js');
     if (fs.existsSync(swPath)) {
-      res.writeHead(200, {
-        'Content-Type': 'application/javascript',
-        'Service-Worker-Allowed': '/',
-        'Cache-Control': 'no-cache',
-      });
-      fs.createReadStream(swPath).pipe(res);
+      sendCompressedFile(swPath, 'application/javascript', true, req, res);
       return;
     }
   }
@@ -257,19 +280,14 @@ const server = http.createServer((req, res) => {
     if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
       const ext = path.extname(filePath).toLowerCase();
       const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-      res.writeHead(200, {
-        'Content-Type': contentType,
-        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000',
-      });
-      fs.createReadStream(filePath).pipe(res);
+      sendCompressedFile(filePath, contentType, ext === '.html', req, res);
       return;
     }
 
     // Fallback to index.html for client-side routing
     const indexPath = path.join(DIST_DIR, 'index.html');
     if (fs.existsSync(indexPath)) {
-      res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' });
-      fs.createReadStream(indexPath).pipe(res);
+      sendCompressedFile(indexPath, 'text/html', true, req, res);
       return;
     }
   }
