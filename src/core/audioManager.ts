@@ -1,5 +1,9 @@
+import { VoiceFilterEngine } from './voiceFilter';
+
 export class AudioManager {
+  private rawStream: MediaStream | null = null;
   private localStream: MediaStream | null = null;
+  private voiceFilter: VoiceFilterEngine = new VoiceFilterEngine();
   private audioContext: AudioContext | null = null;
   private localAnalyser: AnalyserNode | null = null;
   private remoteAnalyser: AnalyserNode | null = null;
@@ -19,7 +23,9 @@ export class AudioManager {
       video: false, // Pure audio, zero video packet overhead
     };
 
-    this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    this.rawStream = await navigator.mediaDevices.getUserMedia(constraints);
+    // Apply voice filter (120Hz highpass + 3kHz vocal boost + compressor)
+    this.localStream = this.voiceFilter.processStream(this.rawStream);
     this.setupLocalAnalyser(this.localStream);
     await this.requestWakeLock();
     return this.localStream;
@@ -125,6 +131,11 @@ export class AudioManager {
 
   cleanup() {
     this.releaseWakeLock();
+    this.voiceFilter.cleanup();
+    if (this.rawStream) {
+      this.rawStream.getTracks().forEach((track) => track.stop());
+      this.rawStream = null;
+    }
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
       this.localStream = null;

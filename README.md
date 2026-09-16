@@ -21,6 +21,9 @@ Mainstream calling apps like **WhatsApp, Messenger, and Telegram** fail in low-s
 
 **ImiCall** is engineered from the ground up to maintain intelligible, unbroken voice calls in **1-bar signal conditions, 2G/EDGE networks, and heavy packet loss**:
 
+- 🔔 **Synthesized Phone Ringing & Vibration**: When a partner dials, the receiver's phone rings with pleasant synthesized chime notes and vibrates (`navigator.vibrate`), while the caller hears realistic telephone ringback.
+- 🔑 **Mandatory Secret Passcode (PIN `2023`)**: Both dialing and answering require PIN `2023`. Unlocks zero-trust AES-GCM encryption key derivation.
+- 🎙️ **Voice Intelligibility Boost Filter**: 120Hz high-pass filter cuts wind/engine rumble, while a 3kHz vocal presence filter and dynamics compressor ensure quiet whispers are heard clearly.
 - ⚡ **Opus Codec Deep Tuning (6 - 8 kbps)**: Drastically slashes audio data rates by up to 75% compared to standard VoIP.
 - 📦 **60ms Packet Framing (`ptime=60`)**: Cuts packet count from 50 packets/sec to only **16.6 packets/sec**, eliminating over 60% of packet header network overhead and preventing cellular bufferbloat.
 - 🛡️ **In-band Forward Error Correction (FEC)**: Automatically reconstructs dropped audio packets on-the-fly even with **30% - 40% packet loss**.

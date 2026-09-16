@@ -65,12 +65,25 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+export const REQUIRED_PASSCODE = '2023';
+
 export type CallState =
   | 'idle'
   | 'creating'
   | 'waiting'
+  | 'ringing-outgoing'
+  | 'ringing-incoming'
   | 'connecting'
   | 'connected'
   | 'reconnecting'
   | 'disconnected'
   | 'error';
+
+export async function hashPasscode(pin: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(pin.trim());
+  const cryptoApi = typeof window !== 'undefined' && window.crypto ? window.crypto : (globalThis as any).crypto;
+  const hashBuffer = await cryptoApi.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
