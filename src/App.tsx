@@ -14,11 +14,11 @@ import {
   Check,
   Radio,
   Lock,
-  Wifi,
-  Sparkles,
   Volume2,
   BellRing,
-  CheckCircle2,
+  Settings,
+  RefreshCw,
+  Share2,
 } from 'lucide-react';
 import { SignalProfile, NetworkStats, ChatMessage, CallState, SIGNAL_PROFILES, REQUIRED_PASSCODE } from './core/types';
 import { WebRTCClient } from './core/webrtcClient';
@@ -27,14 +27,17 @@ import { DiagnosticsModal } from './components/DiagnosticsModal';
 import { QrModal } from './components/QrModal';
 import { ChatDrawer } from './components/ChatDrawer';
 
+const STORAGE_KEY = 'imicall_saved_tunnel_v1';
+
 export const App: React.FC = () => {
-  // Room & Auth State
-  const [roomId, setRoomId] = useState<string>('');
+  // Line & Auth State
+  const [lineId, setLineId] = useState<string>('');
   const [passcode, setPasscode] = useState<string>(REQUIRED_PASSCODE);
-  const [incomingPin, setIncomingPin] = useState<string>(REQUIRED_PASSCODE);
+  const [incomingPin, setIncomingPin] = useState<string>('');
+  const [hasSavedLine, setHasSavedLine] = useState<boolean>(false);
   const [selectedProfile, setSelectedProfile] = useState<SignalProfile>('extreme');
   const [callState, setCallState] = useState<CallState>('idle');
-  const [isPeerInRoom, setIsPeerInRoom] = useState<boolean>(false);
+  const [isPeerOnline, setIsPeerOnline] = useState<boolean>(false);
 
   // In-Call Controls
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -44,10 +47,11 @@ export const App: React.FC = () => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [hasUnreadChat, setHasUnreadChat] = useState<boolean>(false);
 
-  // Modals
+  // Modals & Sheets
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
   const [isQrOpen, setIsQrOpen] = useState<boolean>(false);
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -56,30 +60,46 @@ export const App: React.FC = () => {
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const volumeIntervalRef = useRef<any>(null);
 
-  // Parse URL Hash on mount
+  // Load or Save Dedicated Line from URL or LocalStorage
   useEffect(() => {
     const hash = window.location.hash.substring(1);
     const params = new URLSearchParams(hash);
-    const roomParam = params.get('room');
-    const pinParam = params.get('pin');
+    const hashLine = params.get('line') || params.get('room');
+    const hashPin = params.get('pin');
 
-    if (roomParam) {
-      setRoomId(roomParam);
-    } else {
-      const rand = Math.floor(100000 + Math.random() * 900000);
-      setRoomId(`imi-${rand}`);
+    if (hashLine) {
+      const pinToUse = hashPin || REQUIRED_PASSCODE;
+      setLineId(hashLine);
+      setPasscode(pinToUse);
+      // Save line to localStorage for permanent future access
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ lineId: hashLine, passcode: pinToUse }));
+      setHasSavedLine(true);
+      connectSavedLine(hashLine, pinToUse);
+      return;
     }
 
-    if (pinParam) {
-      setPasscode(pinParam);
-      setIncomingPin(pinParam);
-    } else {
-      setPasscode(REQUIRED_PASSCODE);
-      setIncomingPin(REQUIRED_PASSCODE);
+    // Check LocalStorage
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed.lineId) {
+          setLineId(parsed.lineId);
+          setPasscode(parsed.passcode || REQUIRED_PASSCODE);
+          setHasSavedLine(true);
+          connectSavedLine(parsed.lineId, parsed.passcode || REQUIRED_PASSCODE);
+          return;
+        }
+      } catch (e) {}
     }
+
+    // First time visitor without saved line: create a default unique line ID
+    const randomLine = 'line-' + Math.floor(1000 + Math.random() * 9000) + '-' + Math.floor(1000 + Math.random() * 9000);
+    setLineId(randomLine);
+    setPasscode(REQUIRED_PASSCODE);
   }, []);
 
-  // Poll volume for VU meter
+  // Poll volume for VU visualizer
   useEffect(() => {
     if (callState === 'connected') {
       volumeIntervalRef.current = setInterval(() => {
@@ -104,31 +124,11 @@ export const App: React.FC = () => {
     };
   }, [callState]);
 
-  const getInviteUrl = () => {
-    const url = new URL(window.location.href);
-    url.hash = `room=${encodeURIComponent(roomId)}&pin=${encodeURIComponent(passcode)}`;
-    return url.toString();
-  };
-
-  const handleCopyInvite = () => {
-    navigator.clipboard.writeText(getInviteUrl());
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
-  };
-
-  // Join Room & Initialize Audio Engine
-  const handleJoinRoom = async () => {
-    if (!roomId.trim()) {
-      setErrorMessage('Please provide a room ID');
-      return;
+  // Connect to the saved line channel in background
+  const connectSavedLine = async (targetLine: string, targetPin: string) => {
+    if (clientRef.current) {
+      clientRef.current.close();
     }
-
-    if (passcode.trim() !== REQUIRED_PASSCODE) {
-      setErrorMessage(`Mandatory passcode "${REQUIRED_PASSCODE}" is required to enter room.`);
-      return;
-    }
-
-    setErrorMessage(null);
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     let signalingUrl: string;
@@ -140,20 +140,20 @@ export const App: React.FC = () => {
 
     const client = new WebRTCClient({
       signalingUrl,
-      roomId: roomId.trim().toLowerCase(),
-      passcode: passcode.trim(),
+      roomId: targetLine.trim().toLowerCase(),
+      passcode: targetPin.trim(),
       profile: selectedProfile,
     });
 
     client.onStateChange = (newState) => {
       setCallState(newState);
       if (newState === 'error') {
-        setErrorMessage('Failed to connect to room.');
+        setErrorMessage('Failed to connect to line.');
       }
     };
 
-    client.onPeerStatusChange = (inRoom) => {
-      setIsPeerInRoom(inRoom);
+    client.onPeerStatusChange = (isOnline) => {
+      setIsPeerOnline(isOnline);
     };
 
     client.onStatsUpdate = (stats) => {
@@ -183,13 +183,63 @@ export const App: React.FC = () => {
     await client.start();
   };
 
-  // Caller dials partner
-  const handleRingPartner = async () => {
-    if (!clientRef.current) return;
+  // Initial Setup Save Button
+  const handleSaveAndConnectLine = () => {
+    if (!lineId.trim()) {
+      setErrorMessage('Please enter a valid line identifier');
+      return;
+    }
+
+    if (!passcode.trim()) {
+      setErrorMessage('Please enter your secret passcode');
+      return;
+    }
+
     setErrorMessage(null);
-    const success = await clientRef.current.ringPartner(passcode);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ lineId: lineId.trim(), passcode: passcode.trim() }));
+    setHasSavedLine(true);
+    connectSavedLine(lineId.trim(), passcode.trim());
+  };
+
+  // Reset / Clear Saved Line
+  const handleResetLine = () => {
+    if (clientRef.current) {
+      clientRef.current.close();
+      clientRef.current = null;
+    }
+    localStorage.removeItem(STORAGE_KEY);
+    window.location.hash = '';
+    setHasSavedLine(false);
+    setCallState('idle');
+    setIsSettingsOpen(false);
+
+    // Generate new fresh line ID
+    const randomLine = 'line-' + Math.floor(1000 + Math.random() * 9000) + '-' + Math.floor(1000 + Math.random() * 9000);
+    setLineId(randomLine);
+    setPasscode(REQUIRED_PASSCODE);
+  };
+
+  const getInviteUrl = () => {
+    const url = new URL(window.location.href);
+    url.hash = `line=${encodeURIComponent(lineId)}&pin=${encodeURIComponent(passcode)}`;
+    return url.toString();
+  };
+
+  const handleCopyInvite = () => {
+    navigator.clipboard.writeText(getInviteUrl());
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  // 1-Tap Call Partner
+  const handleRingPartner = async () => {
+    if (!clientRef.current) {
+      await connectSavedLine(lineId, passcode);
+    }
+    setErrorMessage(null);
+    const success = await clientRef.current?.ringPartner(passcode);
     if (!success) {
-      setErrorMessage(`Passcode must be ${REQUIRED_PASSCODE}`);
+      setErrorMessage('Passcode verification failed.');
     }
   };
 
@@ -197,33 +247,33 @@ export const App: React.FC = () => {
   const handleAnswerCall = async () => {
     if (!clientRef.current) return;
     setErrorMessage(null);
-    const success = await clientRef.current.acceptIncomingCall(incomingPin);
+    const entered = incomingPin.trim() || passcode;
+    const success = await clientRef.current.acceptIncomingCall(entered);
     if (!success) {
-      setErrorMessage(`Incorrect Passcode! Must enter "${REQUIRED_PASSCODE}" to answer.`);
+      setErrorMessage('Incorrect Passcode! Access denied.');
     }
   };
 
-  // Callee declines
   const handleDeclineCall = () => {
     if (clientRef.current) {
       clientRef.current.declineIncomingCall();
     }
   };
 
-  // Caller cancels ringing
   const handleCancelCall = () => {
     if (clientRef.current) {
       clientRef.current.cancelOutgoingCall();
     }
   };
 
-  // Hangup active call
   const handleEndCall = () => {
     if (clientRef.current) {
+      clientRef.current.soundManager.stopAll();
       clientRef.current.close();
-      clientRef.current = null;
+      // Reconnect to standby
+      connectSavedLine(lineId, passcode);
     }
-    setCallState('idle');
+    setCallState('waiting');
     setNetworkStats(null);
     setChatMessages([]);
   };
@@ -259,29 +309,39 @@ export const App: React.FC = () => {
       <header className="app-header">
         <div className="brand-wrapper">
           <div className="brand-icon">
-            <Radio size={24} />
+            <Radio size={22} />
           </div>
           <div>
             <h1 className="brand-title">ImiCall</h1>
-            <p className="brand-tagline">Low-Bandwidth WebRTC Calling • Voice Filter & Ringing Engine</p>
+            <p className="brand-tagline">Encrypted Private Calling Channel</p>
           </div>
         </div>
 
         <div className="header-badges">
           <div className="badge-e2ee">
-            <ShieldCheck size={14} />
-            <span>Passcode PIN ({passcode})</span>
+            <ShieldCheck size={14} color="#249c6f" />
+            <span>Secure Tunnel</span>
           </div>
+          {hasSavedLine && (
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '0.4rem 0.65rem' }}
+              onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+              title="Line Settings"
+            >
+              <Settings size={15} />
+            </button>
+          )}
         </div>
       </header>
 
-      {/* Error Alert */}
+      {/* Error Banner */}
       {errorMessage && (
         <div
           style={{
             background: '#1f1f1f',
             border: '1px solid rgba(255, 255, 255, 0.25)',
-            borderRadius: '10px',
+            borderRadius: '8px',
             padding: '0.85rem 1rem',
             color: '#ffffff',
             fontSize: '0.85rem',
@@ -301,63 +361,82 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* VIEW 1: INITIAL SETUP & PASSCODE ENTRY */}
-      {callState === 'idle' || callState === 'error' ? (
+      {/* Settings Modal (Reset Line / Share Options) */}
+      {isSettingsOpen && (
+        <div className="modal-backdrop" onClick={() => setIsSettingsOpen(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff' }}>Private Line Settings</h3>
+              <button className="btn btn-secondary" style={{ padding: '0.4rem' }} onClick={() => setIsSettingsOpen(false)}>
+                ✕
+              </button>
+            </div>
+            <p style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '1.25rem' }}>
+              Your browser has saved this private calling line. Every time you open this page, you are directly connected to this line.
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <button className="btn btn-secondary btn-full" onClick={handleCopyInvite}>
+                {copiedLink ? <Check size={16} color="#249c6f" /> : <Copy size={16} />}
+                {copiedLink ? 'Invite Link Copied' : 'Share Line Invite Link'}
+              </button>
+              <button className="btn btn-secondary btn-full" onClick={() => { setIsQrOpen(true); setIsSettingsOpen(false); }}>
+                <QrCode size={16} /> Show Line QR Code
+              </button>
+              <button className="btn btn-danger btn-full" style={{ marginTop: '0.5rem' }} onClick={handleResetLine}>
+                <RefreshCw size={16} /> Disconnect & Create New Line
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* VIEW A: FIRST-TIME SETUP (Only shown if no line is saved yet) */}
+      {!hasSavedLine && (callState === 'idle' || callState === 'error') && (
         <div className="setup-grid">
           <div className="glass-panel">
             <h2 className="panel-title">
-              <Sparkles size={18} color="#249c6f" /> Private Calling Room
+              <Lock size={18} color="#249c6f" /> Set Up Dedicated Line
             </h2>
             <p className="panel-subtitle">
-              Low-signal private room with synthesized ringing and mandatory Passcode protection.
+              Set up your permanent direct calling channel. Once saved, you can call with a single tap whenever you visit.
             </p>
 
             <div className="input-group">
-              <label className="input-label">Room Identifier</label>
+              <label className="input-label">Tunnel Identifier</label>
               <input
                 type="text"
                 className="input-field mono"
-                value={roomId}
-                onChange={(e) => setRoomId(e.target.value)}
-                placeholder="e.g. imi-948-219"
+                value={lineId}
+                onChange={(e) => setLineId(e.target.value)}
+                placeholder="e.g. line-8372-9182"
               />
             </div>
 
             <div className="input-group">
-              <label className="input-label" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <Lock size={14} color="#249c6f" /> Passcode (PIN 2023 Required)
-              </label>
+              <label className="input-label">Secret Passcode (PIN)</label>
               <input
-                type="text"
+                type="password"
                 className="input-field mono"
                 value={passcode}
                 onChange={(e) => setPasscode(e.target.value)}
-                placeholder="2023"
+                placeholder="••••"
               />
-              <span style={{ fontSize: '0.72rem', color: '#249c6f', marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <CheckCircle2 size={12} /> Mandatory secret passcode {REQUIRED_PASSCODE} enforced for dialing and answering.
-              </span>
             </div>
 
-            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.5rem' }}>
-              <button className="btn btn-primary btn-full" onClick={handleJoinRoom}>
-                <Phone size={18} /> Join Room
-              </button>
-              <button className="btn btn-secondary" title="Scan QR" onClick={() => setIsQrOpen(true)}>
-                <QrCode size={18} />
-              </button>
-              <button className="btn btn-secondary" title="Copy Link" onClick={handleCopyInvite}>
-                {copiedLink ? <Check size={18} color="#249c6f" /> : <Copy size={18} />}
+            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.75rem' }}>
+              <button className="btn btn-primary btn-full" onClick={handleSaveAndConnectLine}>
+                <Phone size={18} /> Save & Open Line
               </button>
             </div>
           </div>
 
           <div className="glass-panel">
             <h2 className="panel-title">
-              <Zap size={18} color="#249c6f" /> Signal & Codec Profile
+              <Zap size={18} color="#249c6f" /> Audio & Signal Profile
             </h2>
             <p className="panel-subtitle">
-              Opus audio engine is tuned to operate reliably down to 6 kbps with 60ms frames.
+              Select your network condition. Opus audio engine will maintain voice clarity under low reception.
             </p>
 
             <div className="profile-cards">
@@ -379,141 +458,132 @@ export const App: React.FC = () => {
                 );
               })}
             </div>
-
-            <div style={{ background: '#181818', padding: '0.85rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'rgba(255,255,255,0.7)' }}>
-                <Wifi size={14} color="#249c6f" />
-                <span><strong>Hardware Voice Capture:</strong> Echo cancellation, noise reduction, and auto gain control active.</span>
-              </div>
-            </div>
           </div>
         </div>
-      ) : null}
+      )}
 
-      {/* VIEW 2: ROOM STANDBY / WAITING TO RING */}
-      {callState === 'waiting' && (
-        <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem 1.5rem', maxWidth: '560px', margin: '0 auto' }}>
-          <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(36, 156, 111, 0.15)', border: '2px solid #249c6f', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem', color: '#249c6f' }}>
-            <Radio size={30} />
+      {/* VIEW B: PERMANENT SAVED DEDICATED HOTLINE (1-Tap Call Partner) */}
+      {hasSavedLine && callState === 'waiting' && (
+        <div className="dedicated-line-card">
+          <div className="line-badge">
+            <ShieldCheck size={14} />
+            <span>Dedicated Direct Line Connected</span>
           </div>
 
-          <h2 style={{ fontSize: '1.35rem', fontWeight: 800, marginBottom: '0.5rem', color: '#ffffff' }}>Calling Room Ready</h2>
-          <p style={{ fontSize: '0.88rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '1.75rem' }}>
-            Room <strong style={{ color: '#ffffff', fontFamily: 'monospace' }}>{roomId}</strong> • Passcode Protected (<strong style={{ color: '#249c6f' }}>{passcode}</strong>)
+          <h2 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.4rem', color: '#ffffff' }}>
+            Private Hotline
+          </h2>
+          <p style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.65)' }}>
+            This channel is saved in your browser. Tap below to ring your partner's phone directly.
           </p>
 
-          <div style={{ background: '#181818', border: '1px solid var(--border-card)', borderRadius: '12px', padding: '1rem', marginBottom: '2rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)' }}>Partner Status:</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 600, color: isPeerInRoom ? '#249c6f' : 'rgba(255, 255, 255, 0.6)' }}>
-                <span className="pulse-dot" />
-                {isPeerInRoom ? 'Partner is in Room' : 'Waiting for Partner to open link...'}
+          <div className="line-status-box">
+            <span style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.6)' }}>Partner Line Status:</span>
+            <div className="partner-status-pill">
+              <span className={`status-dot ${isPeerOnline ? '' : 'offline'}`} />
+              <span style={{ color: isPeerOnline ? '#249c6f' : 'rgba(255, 255, 255, 0.7)' }}>
+                {isPeerOnline ? 'Partner Online' : 'Partner Standby'}
               </span>
             </div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-            <button
-              className="btn btn-primary btn-full"
-              style={{ padding: '0.95rem', fontSize: '1rem' }}
-              onClick={handleRingPartner}
-            >
-              <PhoneCall size={20} /> Ring Partner Phone
+          <button
+            className="btn btn-primary btn-full"
+            style={{ padding: '1rem', fontSize: '1.05rem', fontWeight: 700, marginBottom: '1rem' }}
+            onClick={handleRingPartner}
+          >
+            <PhoneCall size={20} /> Call Partner
+          </button>
+
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button className="btn btn-secondary btn-full" onClick={handleCopyInvite}>
+              {copiedLink ? <Check size={16} color="#249c6f" /> : <Share2 size={16} />}
+              {copiedLink ? 'Invite Link Copied' : 'Share Line with Partner'}
             </button>
-
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <button className="btn btn-secondary btn-full" onClick={handleCopyInvite}>
-                {copiedLink ? <Check size={16} color="#249c6f" /> : <Copy size={16} />}
-                {copiedLink ? 'Link Copied!' : 'Copy Invite Link'}
-              </button>
-              <button className="btn btn-secondary" onClick={() => setIsQrOpen(true)}>
-                <QrCode size={18} />
-              </button>
-            </div>
-
-            <button className="btn btn-secondary btn-full" style={{ marginTop: '0.5rem', color: 'rgba(255, 255, 255, 0.6)' }} onClick={handleEndCall}>
-              Leave Room
+            <button className="btn btn-secondary" onClick={() => setIsQrOpen(true)} title="Scan Line QR">
+              <QrCode size={18} />
             </button>
           </div>
         </div>
       )}
 
-      {/* VIEW 3: OUTGOING CALLING (CALLER SCREEN) */}
+      {/* VIEW C: OUTGOING CALLING (Caller Screen) */}
       {callState === 'ringing-outgoing' && (
-        <div className="glass-panel" style={{ textAlign: 'center', padding: '3.5rem 1.5rem', maxWidth: '480px', margin: '0 auto' }}>
+        <div className="glass-panel" style={{ textAlign: 'center', padding: '3.5rem 1.5rem', maxWidth: '480px', margin: '1.5rem auto' }}>
           <div
             style={{
-              width: '88px',
-              height: '88px',
+              width: '80px',
+              height: '80px',
               borderRadius: '50%',
-              background: 'rgba(36, 156, 111, 0.15)',
+              background: '#181818',
               border: '2px solid #249c6f',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               margin: '0 auto 1.5rem',
               color: '#249c6f',
-              boxShadow: '0 0 30px rgba(36, 156, 111, 0.35)',
-              animation: 'pulse 1.8s infinite',
             }}
           >
-            <BellRing size={40} />
+            <BellRing size={36} />
           </div>
 
-          <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '0.5rem', color: '#ffffff' }}>Calling Partner...</h2>
-          <p style={{ fontSize: '0.88rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '2.5rem' }}>
-            Phone is ringing. Waiting for partner to enter PIN {REQUIRED_PASSCODE} and answer.
+          <h2 style={{ fontSize: '1.35rem', fontWeight: 700, marginBottom: '0.4rem', color: '#ffffff' }}>
+            Calling Partner...
+          </h2>
+          <p style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.65)', marginBottom: '2.5rem' }}>
+            Partner's phone is ringing. Waiting for answer...
           </p>
 
-          <button className="btn btn-danger btn-full" style={{ padding: '0.9rem', fontSize: '1rem' }} onClick={handleCancelCall}>
+          <button className="btn btn-danger btn-full" style={{ padding: '0.85rem' }} onClick={handleCancelCall}>
             <PhoneOff size={18} /> Cancel Call
           </button>
         </div>
       )}
 
-      {/* VIEW 4: INCOMING CALL ALERT (CALLEE SCREEN) */}
+      {/* VIEW D: INCOMING CALL SCREEN (Callee Screen) */}
       {callState === 'ringing-incoming' && (
         <div className="modal-backdrop">
-          <div className="modal-card" style={{ textAlign: 'center', padding: '2.5rem 1.75rem' }}>
+          <div className="modal-card" style={{ textAlign: 'center', padding: '2.5rem 2rem' }}>
             <div
               style={{
-                width: '88px',
-                height: '88px',
+                width: '80px',
+                height: '80px',
                 borderRadius: '50%',
-                background: 'rgba(36, 156, 111, 0.2)',
+                background: '#181818',
                 border: '2px solid #249c6f',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 margin: '0 auto 1.25rem',
                 color: '#249c6f',
-                boxShadow: '0 0 35px rgba(36, 156, 111, 0.4)',
-                animation: 'pulse 1.2s infinite',
               }}
             >
-              <PhoneCall size={42} />
+              <PhoneCall size={36} />
             </div>
 
-            <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: '0.4rem', color: '#ffffff' }}>Incoming Private Call!</h2>
+            <h2 style={{ fontSize: '1.35rem', fontWeight: 700, marginBottom: '0.35rem', color: '#ffffff' }}>
+              Incoming Call
+            </h2>
             <p style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)', marginBottom: '1.5rem' }}>
-              Partner is calling you in room <strong style={{ color: '#ffffff' }}>{roomId}</strong>. Enter secret Passcode to unlock and answer:
+              Your partner is calling on your dedicated direct line.
             </p>
 
             <div className="input-group" style={{ marginBottom: '1.5rem' }}>
-              <label className="input-label" style={{ textAlign: 'left' }}>Passcode (PIN 2023 Required)</label>
+              <label className="input-label" style={{ textAlign: 'left' }}>Passcode (PIN)</label>
               <input
-                type="text"
+                type="password"
                 className="input-field mono"
-                style={{ textAlign: 'center', fontSize: '1.2rem', letterSpacing: '0.2em' }}
+                style={{ textAlign: 'center', fontSize: '1.25rem', letterSpacing: '0.3em' }}
                 value={incomingPin}
                 onChange={(e) => setIncomingPin(e.target.value)}
-                placeholder="2023"
+                placeholder="••••"
+                autoFocus
               />
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
               <button className="btn btn-primary" style={{ padding: '0.85rem' }} onClick={handleAnswerCall}>
-                <Phone size={18} /> Answer Call
+                <Phone size={18} /> Answer
               </button>
               <button className="btn btn-danger" style={{ padding: '0.85rem' }} onClick={handleDeclineCall}>
                 <PhoneOff size={18} /> Decline
@@ -523,40 +593,23 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* VIEW 5: ACTIVE CALL SCREEN */}
+      {/* VIEW E: ACTIVE CALL SCREEN */}
       {(callState === 'connecting' || callState === 'connected' || callState === 'reconnecting') && (
         <div className="glass-panel call-active-container">
-          <div
-            className={`call-status-pill ${
-              callState === 'connected'
-                ? 'status-connected'
-                : 'status-connecting'
-            }`}
-          >
+          <div className="call-status-pill status-connected">
             <span className="pulse-dot" />
             <span>
               {callState === 'connected'
-                ? 'Call Active • PIN 2023 Encrypted'
-                : 'Establishing Low-Latency PeerConnection...'}
+                ? 'Call Active • Encrypted Line'
+                : 'Connecting Audio Channel...'}
             </span>
           </div>
 
-          <div style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)' }}>Room:</span>
-            <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#ffffff', background: 'rgba(255,255,255,0.08)', padding: '0.2rem 0.6rem', borderRadius: '4px' }}>
-              {roomId}
-            </span>
-            <button className="btn btn-secondary" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }} onClick={handleCopyInvite}>
-              {copiedLink ? <Check size={14} color="#249c6f" /> : <Copy size={14} />}
-              {copiedLink ? 'Copied' : 'Invite'}
-            </button>
-          </div>
-
-          {/* Dynamic Audio Waves & Avatars */}
+          {/* Audio Avatars */}
           <div className="audio-avatars-container">
             <div className="avatar-wrapper">
               <div className={`avatar-disc ${localVolume > 5 && !isMuted ? 'speaking' : ''}`}>
-                {isMuted ? <MicOff size={36} color="rgba(255, 255, 255, 0.5)" /> : <Mic size={36} color="#249c6f" />}
+                {isMuted ? <MicOff size={32} color="rgba(255, 255, 255, 0.4)" /> : <Mic size={32} color="#249c6f" />}
               </div>
               <span className="avatar-label">You {isMuted && '(Muted)'}</span>
               <AudioWaveform volume={localVolume} isActive={!isMuted} color="#249c6f" />
@@ -564,7 +617,7 @@ export const App: React.FC = () => {
 
             <div className="avatar-wrapper">
               <div className={`avatar-disc ${remoteVolume > 5 ? 'speaking' : ''}`}>
-                <Volume2 size={36} color={callState === 'connected' ? '#249c6f' : 'rgba(255, 255, 255, 0.4)'} />
+                <Volume2 size={32} color={callState === 'connected' ? '#249c6f' : 'rgba(255, 255, 255, 0.4)'} />
               </div>
               <span className="avatar-label">Partner</span>
               <AudioWaveform volume={remoteVolume} isActive={callState === 'connected'} color="#249c6f" />
@@ -593,7 +646,7 @@ export const App: React.FC = () => {
             </div>
             <div className="metric-box">
               <div className="metric-label">Profile</div>
-              <div className="metric-value good" style={{ fontSize: '0.9rem' }}>
+              <div className="metric-value good" style={{ fontSize: '0.85rem' }}>
                 {SIGNAL_PROFILES[selectedProfile].badge}
               </div>
             </div>
@@ -610,7 +663,7 @@ export const App: React.FC = () => {
                   fontSize: '0.78rem',
                   padding: '0.4rem 0.8rem',
                   borderColor: selectedProfile === key ? '#249c6f' : undefined,
-                  background: selectedProfile === key ? 'rgba(36, 156, 111, 0.15)' : undefined,
+                  background: selectedProfile === key ? '#1f1f1f' : undefined,
                   color: selectedProfile === key ? '#249c6f' : '#ffffff',
                 }}
               >
@@ -619,7 +672,7 @@ export const App: React.FC = () => {
             ))}
           </div>
 
-          {/* Actions */}
+          {/* In-Call Controls Bar */}
           <div className="call-actions-bar">
             <button
               className={`btn btn-icon ${isMuted ? 'btn-danger' : 'btn-secondary'}`}
@@ -665,7 +718,7 @@ export const App: React.FC = () => {
             <button
               className="btn btn-icon btn-secondary"
               onClick={() => setIsQrOpen(true)}
-              title="QR Code"
+              title="Line QR"
             >
               <QrCode size={22} />
             </button>
@@ -681,22 +734,24 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Modals */}
+      {/* Diagnostics Modal */}
       <DiagnosticsModal
         isOpen={isDiagnosticsOpen}
         onClose={() => setIsDiagnosticsOpen(false)}
         stats={networkStats}
         profile={selectedProfile}
         isE2eeActive={true}
-        roomId={roomId}
+        roomId={lineId}
       />
 
+      {/* QR Code Modal */}
       <QrModal
         isOpen={isQrOpen}
         onClose={() => setIsQrOpen(false)}
         inviteUrl={getInviteUrl()}
       />
 
+      {/* Emergency Fallback Chat Drawer */}
       <ChatDrawer
         isOpen={isChatOpen}
         onClose={() => setIsChatOpen(false)}
