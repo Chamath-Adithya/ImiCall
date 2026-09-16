@@ -131,9 +131,12 @@ export const App: React.FC = () => {
     setErrorMessage(null);
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const signalingHost = window.location.hostname || 'localhost';
-    const signalingPort = '8080';
-    const signalingUrl = `${protocol}//${signalingHost}:${signalingPort}`;
+    let signalingUrl: string;
+    if (window.location.port === '3000') {
+      signalingUrl = `${protocol}//${window.location.hostname || 'localhost'}:8080`;
+    } else {
+      signalingUrl = `${protocol}//${window.location.host}/ws`;
+    }
 
     const client = new WebRTCClient({
       signalingUrl,
