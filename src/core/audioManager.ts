@@ -3,17 +3,19 @@ export class AudioManager {
   private audioContext: AudioContext | null = null;
   private localAnalyser: AnalyserNode | null = null;
   private remoteAnalyser: AnalyserNode | null = null;
+  private remoteGainNode: GainNode | null = null;
+  private remoteLimiter: DynamicsCompressorNode | null = null;
   private wakeLockSentinel: any = null;
   private isMuted: boolean = false;
+  private boostLevel: number = 2.2; // Default to 220% loud speaker volume
 
   async initLocalAudio(): Promise<MediaStream> {
-    // Ultra-clean native audio constraints utilizing phone hardware DSP
     const constraints: MediaStreamConstraints = {
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
-        channelCount: 1, // Mono saves 50% cellular bandwidth
+        channelCount: 1,
       },
       video: false,
     };
@@ -41,25 +43,39 @@ export class AudioManager {
     return this.isMuted;
   }
 
-  setupRemoteAudio(remoteStream: MediaStream, audioElement: HTMLAudioElement) {
-    audioElement.srcObject = remoteStream;
-    audioElement.muted = false;
-    audioElement.volume = 1.0;
-
-    const playPromise = audioElement.play();
-    if (playPromise !== undefined) {
-      playPromise.catch((e) => {
-        console.warn('[Audio] Autoplay blocked, unlocking on user tap:', e);
-        const unlock = () => {
-          audioElement.play().catch(() => {});
-          document.removeEventListener('click', unlock);
-          document.removeEventListener('touchstart', unlock);
-        };
-        document.addEventListener('click', unlock);
-        document.addEventListener('touchstart', unlock);
-      });
+  /**
+   * Sets the volume boost level (e.g., 1.0 = normal, 2.2 = loud, 3.2 = ultra loud).
+   */
+  setBoostLevel(multiplier: number) {
+    this.boostLevel = multiplier;
+    if (this.remoteGainNode && this.audioContext && this.audioContext.state !== 'closed') {
+      try {
+        this.remoteGainNode.gain.setValueAtTime(multiplier, this.audioContext.currentTime);
+      } catch (e) {
+        this.remoteGainNode.gain.value = multiplier;
+      }
     }
+  }
 
+  getBoostLevel(): number {
+    return this.boostLevel;
+  }
+
+  resumeAudio() {
+    if (this.audioContext && this.audioContext.state === 'suspended') {
+      this.audioContext.resume().catch(() => {});
+    }
+  }
+
+  /**
+   * Sets up remote audio with:
+   * 1. 120Hz High-Pass Filter (strips sub-bass/wind rumble that drowns small speakers)
+   * 2. 2.4kHz Presence Peaking Filter (clarifies human vocal articulation)
+   * 3. Hardware Loudness Booster (GainNode 1x - 3.2x)
+   * 4. Soft-Knee Limiter (DynamicsCompressor to prevent digital clipping)
+   * 5. AudioContext.destination routing directly to device loudspeaker
+   */
+  setupRemoteAudio(remoteStream: MediaStream, audioElement: HTMLAudioElement) {
     try {
       if (!this.audioContext || this.audioContext.state === 'closed') {
         this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -69,11 +85,57 @@ export class AudioManager {
       }
 
       const source = this.audioContext.createMediaStreamSource(remoteStream);
+
+      // 1. Live VU meter analyser
       this.remoteAnalyser = this.audioContext.createAnalyser();
       this.remoteAnalyser.fftSize = 64;
       source.connect(this.remoteAnalyser);
+
+      // 2. High-pass filter: cut sub-120Hz rumble
+      const highpass = this.audioContext.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.setValueAtTime(120, this.audioContext.currentTime);
+      highpass.Q.setValueAtTime(0.7, this.audioContext.currentTime);
+
+      // 3. Speech Presence filter: boost 2400Hz consonants (+3.5dB)
+      const vocalPresence = this.audioContext.createBiquadFilter();
+      vocalPresence.type = 'peaking';
+      vocalPresence.frequency.setValueAtTime(2400, this.audioContext.currentTime);
+      vocalPresence.gain.setValueAtTime(3.5, this.audioContext.currentTime);
+      vocalPresence.Q.setValueAtTime(1.2, this.audioContext.currentTime);
+
+      // 4. Hardware Loudness Booster (GainNode)
+      this.remoteGainNode = this.audioContext.createGain();
+      this.remoteGainNode.gain.setValueAtTime(this.boostLevel, this.audioContext.currentTime);
+
+      // 5. Soft-Knee Limiter (prevents cracking/distortion while amplifying quiet speech)
+      this.remoteLimiter = this.audioContext.createDynamicsCompressor();
+      this.remoteLimiter.threshold.setValueAtTime(-5, this.audioContext.currentTime);
+      this.remoteLimiter.knee.setValueAtTime(6, this.audioContext.currentTime);
+      this.remoteLimiter.ratio.setValueAtTime(14, this.audioContext.currentTime);
+      this.remoteLimiter.attack.setValueAtTime(0.003, this.audioContext.currentTime);
+      this.remoteLimiter.release.setValueAtTime(0.2, this.audioContext.currentTime);
+
+      // DSP Chain: source -> highpass -> vocalPresence -> remoteGainNode -> remoteLimiter -> destination (Loudspeaker)
+      source.connect(highpass);
+      highpass.connect(vocalPresence);
+      vocalPresence.connect(this.remoteGainNode);
+      this.remoteGainNode.connect(this.remoteLimiter);
+      this.remoteLimiter.connect(this.audioContext.destination);
+
+      // Keep audioElement playing in background as silent keepalive
+      audioElement.srcObject = remoteStream;
+      audioElement.muted = true;
+      if ('setSinkId' in audioElement && typeof (audioElement as any).setSinkId === 'function') {
+        (audioElement as any).setSinkId('default').catch(() => {});
+      }
+      audioElement.play().catch(() => {});
     } catch (err) {
-      console.warn('[Audio] Could not attach remote analyser:', err);
+      console.warn('[Audio] Web Audio amplification failed, fallback to native audioElement:', err);
+      audioElement.srcObject = remoteStream;
+      audioElement.muted = false;
+      audioElement.volume = 1.0;
+      audioElement.play().catch(() => {});
     }
   }
 
@@ -94,9 +156,6 @@ export class AudioManager {
     }
   }
 
-  /**
-   * Returns current audio volume (0 - 100) for visualizer.
-   */
   getLocalVolume(): number {
     if (this.isMuted || !this.localAnalyser) return 0;
     return this.calculateVolume(this.localAnalyser);
@@ -154,5 +213,7 @@ export class AudioManager {
     }
     this.localAnalyser = null;
     this.remoteAnalyser = null;
+    this.remoteGainNode = null;
+    this.remoteLimiter = null;
   }
 }

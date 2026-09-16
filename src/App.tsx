@@ -46,6 +46,7 @@ export const App: React.FC = () => {
   const [remoteVolume, setRemoteVolume] = useState<number>(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [hasUnreadChat, setHasUnreadChat] = useState<boolean>(false);
+  const [boostLevel, setBoostLevel] = useState<number>(2.2);
 
   // Modals & Sheets
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
@@ -236,6 +237,7 @@ export const App: React.FC = () => {
     if (!clientRef.current) {
       await connectSavedLine(lineId, passcode);
     }
+    clientRef.current?.audioManager.resumeAudio();
     setErrorMessage(null);
     const success = await clientRef.current?.ringPartner(passcode);
     if (!success) {
@@ -246,6 +248,7 @@ export const App: React.FC = () => {
   // Callee answers
   const handleAnswerCall = async () => {
     if (!clientRef.current) return;
+    clientRef.current.audioManager.resumeAudio();
     setErrorMessage(null);
     const entered = incomingPin.trim() || passcode;
     const success = await clientRef.current.acceptIncomingCall(entered);
@@ -270,7 +273,6 @@ export const App: React.FC = () => {
     if (clientRef.current) {
       clientRef.current.soundManager.stopAll();
       clientRef.current.close();
-      // Reconnect to standby
       connectSavedLine(lineId, passcode);
     }
     setCallState('waiting');
@@ -282,6 +284,14 @@ export const App: React.FC = () => {
     if (clientRef.current) {
       const muted = clientRef.current.audioManager.toggleMute();
       setIsMuted(muted);
+    }
+  };
+
+  const handleBoostChange = (multiplier: number) => {
+    setBoostLevel(multiplier);
+    if (clientRef.current) {
+      clientRef.current.audioManager.setBoostLevel(multiplier);
+      clientRef.current.audioManager.resumeAudio();
     }
   };
 
@@ -653,7 +663,7 @@ export const App: React.FC = () => {
           </div>
 
           {/* Profile Switcher */}
-          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
             {(Object.keys(SIGNAL_PROFILES) as SignalProfile[]).map((key) => (
               <button
                 key={key}
@@ -670,6 +680,47 @@ export const App: React.FC = () => {
                 {SIGNAL_PROFILES[key].badge}
               </button>
             ))}
+          </div>
+
+          {/* Voice Loudness Booster */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              background: '#181818',
+              border: '1px solid #282828',
+              borderRadius: '10px',
+              padding: '0.6rem 0.85rem',
+              marginBottom: '1.25rem',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#ffffff', fontSize: '0.82rem' }}>
+              <Volume2 size={16} color="#249c6f" />
+              <span>Voice Loudness:</span>
+            </div>
+            <div style={{ display: 'flex', gap: '0.35rem' }}>
+              {[
+                { label: '1x Normal', val: 1.0 },
+                { label: '2.2x Loud', val: 2.2 },
+                { label: '3.2x Max', val: 3.2 },
+              ].map((b) => (
+                <button
+                  key={b.val}
+                  onClick={() => handleBoostChange(b.val)}
+                  className={`btn btn-secondary ${boostLevel === b.val ? 'active' : ''}`}
+                  style={{
+                    fontSize: '0.74rem',
+                    padding: '0.3rem 0.6rem',
+                    borderColor: boostLevel === b.val ? '#249c6f' : undefined,
+                    background: boostLevel === b.val ? '#1f1f1f' : undefined,
+                    color: boostLevel === b.val ? '#249c6f' : 'rgba(255, 255, 255, 0.7)',
+                  }}
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* In-Call Controls Bar */}
