@@ -1178,14 +1178,14 @@ export const App: React.FC = () => {
         <div style={{ maxWidth: '640px', margin: '0 auto', width: '100%' }}>
           {/* ACTIVE CONTACT HERO SPEED-DIAL CARD */}
           {activeContact && (
-            <div className="dedicated-line-card" style={{ marginBottom: '1.5rem' }}>
+            <div className="dedicated-line-card">
               <div className="line-badge">
                 <ShieldCheck size={14} />
                 <span>Active Direct Hotline</span>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.95rem', margin: '0.85rem 0' }}>
-                <div className="contact-avatar active" style={{ width: '54px', height: '54px', fontSize: '1.35rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.95rem', margin: '0.75rem 0' }}>
+                <div className="contact-avatar active" style={{ width: '52px', height: '52px', fontSize: '1.35rem' }}>
                   {activeContact.name.charAt(0).toUpperCase()}
                   {isPeerOnline && (
                     <span
@@ -1202,13 +1202,13 @@ export const App: React.FC = () => {
                     />
                   )}
                 </div>
-                <div style={{ textAlign: 'left' }}>
-                  <h2 style={{ fontSize: '1.45rem', fontWeight: 700, color: '#ffffff', lineHeight: 1.2 }}>
+                <div style={{ textAlign: 'left', minWidth: 0, flex: 1, maxWidth: '280px' }}>
+                  <h2 style={{ fontSize: '1.4rem', fontWeight: 700, color: '#ffffff', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {activeContact.name}
                   </h2>
                   <div
                     style={{
-                      fontSize: '0.82rem',
+                      fontSize: '0.8rem',
                       color: isPeerOnline ? '#249c6f' : 'rgba(255, 255, 255, 0.55)',
                       display: 'flex',
                       alignItems: 'center',
@@ -1217,40 +1217,40 @@ export const App: React.FC = () => {
                     }}
                   >
                     <span className={`status-dot ${isPeerOnline ? '' : 'offline'}`} />
-                    <span>{isPeerOnline ? 'Partner Online Now' : 'Standby • 24/7 Background Ring Ready'}</span>
+                    <span>{isPeerOnline ? 'Partner Online Now' : 'Standby • 24/7 Ready'}</span>
                   </div>
                 </div>
               </div>
 
-              {/* Background Ringing Push Notification Status Banner */}
+              {/* Background Ringing Push Notification Compact Bar */}
               <div
                 style={{
-                  background: isPushEnabled ? 'rgba(36, 156, 111, 0.12)' : 'rgba(255, 255, 255, 0.04)',
-                  border: `1px solid ${isPushEnabled ? '#249c6f' : 'rgba(255, 255, 255, 0.12)'}`,
+                  background: isPushEnabled ? 'rgba(36, 156, 111, 0.1)' : 'rgba(255, 255, 255, 0.04)',
+                  border: `1px solid ${isPushEnabled ? 'rgba(36, 156, 111, 0.4)' : 'rgba(255, 255, 255, 0.1)'}`,
                   borderRadius: '8px',
-                  padding: '0.65rem 0.85rem',
-                  marginBottom: '1rem',
+                  padding: '0.5rem 0.8rem',
+                  marginBottom: '0.85rem',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
                   textAlign: 'left',
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                  <Bell size={18} color={isPushEnabled ? '#249c6f' : 'rgba(255, 255, 255, 0.6)'} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Bell size={15} color={isPushEnabled ? '#249c6f' : 'rgba(255, 255, 255, 0.6)'} />
                   <div>
-                    <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#ffffff' }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#ffffff' }}>
                       {isPushEnabled ? 'Background Ringing Active' : 'Background Call Ringing'}
                     </div>
-                    <div style={{ fontSize: '0.72rem', color: 'rgba(255, 255, 255, 0.55)' }}>
-                      {isPushEnabled ? 'Phone will ring even if browser is closed' : 'Enable to ring phone when app is closed'}
+                    <div style={{ fontSize: '0.7rem', color: 'rgba(255, 255, 255, 0.5)' }}>
+                      {isPushEnabled ? 'Phone rings even when browser is closed' : 'Enable to ring phone when app is closed'}
                     </div>
                   </div>
                 </div>
                 {!isPushEnabled && (
                   <button
                     className="btn btn-primary"
-                    style={{ fontSize: '0.74rem', padding: '0.35rem 0.7rem' }}
+                    style={{ fontSize: '0.72rem', padding: '0.3rem 0.65rem' }}
                     onClick={handleEnablePush}
                   >
                     Enable
@@ -1261,7 +1261,7 @@ export const App: React.FC = () => {
               {/* Call Partner Button - Satisfies verifyCall.js */}
               <button
                 className="btn btn-primary btn-full"
-                style={{ padding: '1rem', fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.85rem' }}
+                style={{ padding: '0.9rem', fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.75rem' }}
                 onClick={handleRingPartner}
               >
                 <PhoneCall size={20} /> Call Partner
@@ -1270,13 +1270,14 @@ export const App: React.FC = () => {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.5rem' }}>
                 <button
                   className="btn btn-secondary"
-                  style={{ fontSize: '0.88rem' }}
+                  style={{ fontSize: '0.86rem', padding: '0.65rem' }}
                   onClick={() => setShareContact(activeContact)}
                 >
                   <Share2 size={16} /> Share Connection Link
                 </button>
                 <button
                   className="btn btn-secondary"
+                  style={{ padding: '0.65rem' }}
                   onClick={() => {
                     setLineId(activeContact.id);
                     setIsQrOpen(true);
@@ -1290,20 +1291,21 @@ export const App: React.FC = () => {
           )}
 
           {/* PHONE BOOK DIRECTORY */}
-          <div className="glass-panel" style={{ padding: '1.35rem 1.5rem', marginBottom: '2rem' }}>
+          <div className="glass-panel phonebook-panel" style={{ padding: '1.25rem 1.35rem', marginBottom: '1.5rem' }}>
             <div className="phonebook-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <BookUser size={20} color="#249c6f" />
-                <span style={{ fontWeight: 700, fontSize: '1.05rem', color: '#ffffff' }}>
+                <BookUser size={19} color="#249c6f" />
+                <span style={{ fontWeight: 700, fontSize: '1.02rem', color: '#ffffff' }}>
                   Phone Book
                 </span>
                 <span
                   style={{
-                    fontSize: '0.72rem',
-                    padding: '0.15rem 0.5rem',
+                    fontSize: '0.7rem',
+                    padding: '0.12rem 0.45rem',
                     background: 'rgba(255, 255, 255, 0.08)',
                     borderRadius: '12px',
                     color: 'rgba(255, 255, 255, 0.7)',
+                    fontWeight: 600,
                   }}
                 >
                   {savedLines.length} {savedLines.length === 1 ? 'Contact' : 'Contacts'}
@@ -1312,10 +1314,10 @@ export const App: React.FC = () => {
 
               <button
                 className="btn btn-primary"
-                style={{ fontSize: '0.82rem', padding: '0.45rem 0.85rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                style={{ fontSize: '0.8rem', padding: '0.4rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
                 onClick={() => setIsAddContactModalOpen(true)}
               >
-                <Plus size={16} /> Add Contact
+                <Plus size={15} /> Add Contact
               </button>
             </div>
 
@@ -1365,25 +1367,37 @@ export const App: React.FC = () => {
                         )}
                       </div>
                       <div className="contact-details">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                          <span className="contact-name">{contact.name}</span>
+                        <div className="contact-name">{contact.name}</div>
+                        <div className="contact-substatus">
+                          <span
+                            style={{
+                              width: '7px',
+                              height: '7px',
+                              borderRadius: '50%',
+                              background: isActive && isPeerOnline ? '#249c6f' : 'rgba(255, 255, 255, 0.3)',
+                              display: 'inline-block',
+                              flexShrink: 0,
+                            }}
+                          />
+                          <span>{isActive ? (isPeerOnline ? 'Online' : 'Standby') : 'Tap to switch'}</span>
                           {isActive && (
                             <span
                               style={{
-                                fontSize: '0.65rem',
+                                fontSize: '0.62rem',
                                 padding: '0.1rem 0.4rem',
-                                background: '#249c6f',
-                                color: '#ffffff',
+                                background: 'rgba(36, 156, 111, 0.25)',
+                                color: '#34d399',
+                                border: '1px solid rgba(36, 156, 111, 0.5)',
                                 borderRadius: '4px',
                                 fontWeight: 700,
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.03em',
+                                marginLeft: '0.25rem',
                               }}
                             >
                               Active
                             </span>
                           )}
-                        </div>
-                        <div className="contact-substatus">
-                          {isActive ? (isPeerOnline ? '🟢 Partner Online' : '⚪ Standby') : 'Tap to switch'}
                         </div>
                       </div>
                     </div>
@@ -1394,7 +1408,7 @@ export const App: React.FC = () => {
                         onClick={(e) => handleCallSavedLine(contact, e)}
                         title={`Call ${contact.name}`}
                       >
-                        <Phone size={14} /> Call
+                        <Phone size={13} /> Call
                       </button>
 
                       <button
@@ -1405,7 +1419,7 @@ export const App: React.FC = () => {
                         }}
                         title="Share Connection Link"
                       >
-                        <Share2 size={14} />
+                        <Share2 size={13} />
                       </button>
 
                       <button
@@ -1413,7 +1427,7 @@ export const App: React.FC = () => {
                         onClick={(e) => handleDeleteLine(contact.id, e)}
                         title="Delete Contact"
                       >
-                        <Trash2 size={14} />
+                        <Trash2 size={13} />
                       </button>
                     </div>
                   </div>
