@@ -7,7 +7,7 @@ export class AudioManager {
   private remoteLimiter: DynamicsCompressorNode | null = null;
   private wakeLockSentinel: any = null;
   private isMuted: boolean = false;
-  private boostLevel: number = 2.2; // Default to 220% loud speaker volume
+  private boostLevel: number = 1.0; // Default to 1.0 (100% natural studio HD clarity)
 
   async initLocalAudio(): Promise<MediaStream> {
     const constraints: MediaStreamConstraints = {
@@ -44,7 +44,7 @@ export class AudioManager {
   }
 
   /**
-   * Sets the volume boost level (e.g., 1.0 = normal, 2.2 = loud, 3.2 = ultra loud).
+   * Sets the volume boost level (e.g., 1.0 = HD Pure, 1.5 = Loud, 2.0 = Max).
    */
   setBoostLevel(multiplier: number) {
     this.boostLevel = multiplier;
@@ -68,12 +68,11 @@ export class AudioManager {
   }
 
   /**
-   * Sets up remote audio with:
-   * 1. 120Hz High-Pass Filter (strips sub-bass/wind rumble that drowns small speakers)
-   * 2. 2.4kHz Presence Peaking Filter (clarifies human vocal articulation)
-   * 3. Hardware Loudness Booster (GainNode 1x - 3.2x)
-   * 4. Soft-Knee Limiter (DynamicsCompressor to prevent digital clipping)
-   * 5. AudioContext.destination routing directly to device loudspeaker
+   * High-Fidelity Remote Audio Pipeline:
+   * 1. Direct Web Audio MediaStream source (routed to loudspeaker)
+   * 2. Pure Hardware Gain Booster (1.0x HD default, undistorted)
+   * 3. Transparent Peak Limiter (prevents digital clipping only without squashing voice)
+   * 4. Direct destination to phone loudspeaker
    */
   setupRemoteAudio(remoteStream: MediaStream, audioElement: HTMLAudioElement) {
     try {
@@ -91,39 +90,24 @@ export class AudioManager {
       this.remoteAnalyser.fftSize = 64;
       source.connect(this.remoteAnalyser);
 
-      // 2. High-pass filter: cut sub-120Hz rumble
-      const highpass = this.audioContext.createBiquadFilter();
-      highpass.type = 'highpass';
-      highpass.frequency.setValueAtTime(120, this.audioContext.currentTime);
-      highpass.Q.setValueAtTime(0.7, this.audioContext.currentTime);
-
-      // 3. Speech Presence filter: boost 2400Hz consonants (+3.5dB)
-      const vocalPresence = this.audioContext.createBiquadFilter();
-      vocalPresence.type = 'peaking';
-      vocalPresence.frequency.setValueAtTime(2400, this.audioContext.currentTime);
-      vocalPresence.gain.setValueAtTime(3.5, this.audioContext.currentTime);
-      vocalPresence.Q.setValueAtTime(1.2, this.audioContext.currentTime);
-
-      // 4. Hardware Loudness Booster (GainNode)
+      // 2. Hardware Loudness Booster (GainNode: 1.0x HD default)
       this.remoteGainNode = this.audioContext.createGain();
       this.remoteGainNode.gain.setValueAtTime(this.boostLevel, this.audioContext.currentTime);
 
-      // 5. Soft-Knee Limiter (prevents cracking/distortion while amplifying quiet speech)
+      // 3. Transparent Peak Limiter (only engages on loud peaks to prevent digital clipping)
       this.remoteLimiter = this.audioContext.createDynamicsCompressor();
-      this.remoteLimiter.threshold.setValueAtTime(-5, this.audioContext.currentTime);
-      this.remoteLimiter.knee.setValueAtTime(6, this.audioContext.currentTime);
-      this.remoteLimiter.ratio.setValueAtTime(14, this.audioContext.currentTime);
+      this.remoteLimiter.threshold.setValueAtTime(-1.0, this.audioContext.currentTime);
+      this.remoteLimiter.knee.setValueAtTime(10, this.audioContext.currentTime);
+      this.remoteLimiter.ratio.setValueAtTime(4.0, this.audioContext.currentTime);
       this.remoteLimiter.attack.setValueAtTime(0.003, this.audioContext.currentTime);
-      this.remoteLimiter.release.setValueAtTime(0.2, this.audioContext.currentTime);
+      this.remoteLimiter.release.setValueAtTime(0.05, this.audioContext.currentTime);
 
-      // DSP Chain: source -> highpass -> vocalPresence -> remoteGainNode -> remoteLimiter -> destination (Loudspeaker)
-      source.connect(highpass);
-      highpass.connect(vocalPresence);
-      vocalPresence.connect(this.remoteGainNode);
+      // Clean signal path: source -> gainNode -> transparentLimiter -> destination (Loudspeaker)
+      source.connect(this.remoteGainNode);
       this.remoteGainNode.connect(this.remoteLimiter);
       this.remoteLimiter.connect(this.audioContext.destination);
 
-      // Keep audioElement playing in background as silent keepalive
+      // Silent keepalive on native element
       audioElement.srcObject = remoteStream;
       audioElement.muted = true;
       if ('setSinkId' in audioElement && typeof (audioElement as any).setSinkId === 'function') {
@@ -131,7 +115,7 @@ export class AudioManager {
       }
       audioElement.play().catch(() => {});
     } catch (err) {
-      console.warn('[Audio] Web Audio amplification failed, fallback to native audioElement:', err);
+      console.warn('[Audio] Web Audio amplification fallback to native audioElement:', err);
       audioElement.srcObject = remoteStream;
       audioElement.muted = false;
       audioElement.volume = 1.0;

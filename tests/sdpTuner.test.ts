@@ -17,22 +17,22 @@ describe('SDP Tuner for Low Bandwidth', () => {
   it('should inject extreme low bandwidth parameters into Opus fmtp', () => {
     const tuned = tuneSdpForLowBandwidth(sampleSdp, 'extreme');
 
-    expect(tuned).toContain('maxaveragebitrate=6000');
+    expect(tuned).toContain('maxaveragebitrate=10000');
     expect(tuned).toContain('useinbandfec=1');
     expect(tuned).toContain('usedtx=1');
     expect(tuned).toContain('maxplaybackrate=16000');
-    expect(tuned).toContain('a=ptime:60');
+    expect(tuned).toContain('a=ptime:40');
     expect(tuned).toContain('a=maxptime:60');
   });
 
   it('should inject balanced profile parameters correctly', () => {
     const tuned = tuneSdpForLowBandwidth(sampleSdp, 'balanced');
 
-    expect(tuned).toContain('maxaveragebitrate=12000');
+    expect(tuned).toContain('maxaveragebitrate=18000');
     expect(tuned).toContain('useinbandfec=1');
     expect(tuned).toContain('usedtx=1');
     expect(tuned).toContain('maxplaybackrate=24000');
-    expect(tuned).toContain('a=ptime:40');
+    expect(tuned).toContain('a=ptime:20');
   });
 
   it('should handle SDP without existing fmtp line by creating one', () => {
@@ -44,6 +44,6 @@ describe('SDP Tuner for Low Bandwidth', () => {
 
     const tuned = tuneSdpForLowBandwidth(sdpWithoutFmtp, 'extreme');
     expect(tuned).toContain('a=fmtp:111');
-    expect(tuned).toContain('maxaveragebitrate=6000');
+    expect(tuned).toContain('maxaveragebitrate=10000');
   });
 });

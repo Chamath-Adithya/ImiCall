@@ -180,15 +180,19 @@ export class WebRTCClient {
         }
         break;
 
+      case 'call-ended':
+        // Partner ended active call: stop sounds, teardown WebRTC session, return to standby
+        this.soundManager.stopAll();
+        this.cleanupCallSession();
+        this.setState('waiting');
+        break;
+
       case 'peer-left':
         this.peerInRoom = false;
         if (this.onPeerStatusChange) this.onPeerStatusChange(false);
         this.soundManager.stopAll();
-        if (this.state === 'connected') {
-          this.setState('disconnected');
-        } else {
-          this.setState('waiting');
-        }
+        this.cleanupCallSession();
+        this.setState('waiting');
         break;
 
       case 'room-full':
@@ -321,11 +325,13 @@ export class WebRTCClient {
           break;
         case 'disconnected':
         case 'failed':
-          this.setState('reconnecting');
+          // If peer disconnected or left, tear down call and return cleanly to standby
+          this.cleanupCallSession();
+          this.setState('waiting');
           break;
         case 'closed':
-          this.setState('disconnected');
-          this.stopStatsMonitoring();
+          this.cleanupCallSession();
+          this.setState('waiting');
           break;
       }
     };
@@ -493,6 +499,45 @@ export class WebRTCClient {
       this.statsMonitor.stop();
       this.statsMonitor = null;
     }
+  }
+
+  /**
+   * Resets active WebRTC media session without dropping the WebSocket room connection.
+   */
+  public cleanupCallSession() {
+    this.stopStatsMonitoring();
+    if (this.dataChannel) {
+      try {
+        this.dataChannel.close();
+      } catch (e) {}
+      this.dataChannel = null;
+    }
+    if (this.pc) {
+      try {
+        this.pc.ontrack = null;
+        this.pc.onicecandidate = null;
+        this.pc.onconnectionstatechange = null;
+        this.pc.close();
+      } catch (e) {}
+      this.pc = null;
+    }
+  }
+
+  /**
+   * Gracefully ends the call: notifies remote partner, resets call session, and returns to standby.
+   */
+  public endCall() {
+    this.soundManager.stopAll();
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({
+          type: 'call-ended',
+          roomId: this.options.roomId,
+        })
+      );
+    }
+    this.cleanupCallSession();
+    this.setState('waiting');
   }
 
   public close() {
