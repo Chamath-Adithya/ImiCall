@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { SignalProfile, NetworkStats, ChatMessage, CallState, SIGNAL_PROFILES } from './core/types';
 import { newLineId, newLineSecret, isSecureLine } from './core/privateLine';
+import { useModalFocus } from './core/modalFocus';
 import { runtimeConfig } from './core/runtimeConfig';
 import { localStore } from './core/localStore';
 import { WebRTCClient } from './core/webrtcClient';
@@ -61,6 +62,7 @@ const MY_NAME_KEY = 'imicall_my_name';
 const generateRandomLineId = newLineId;
 
 export const App: React.FC = () => {
+  useModalFocus();
   // Phone Book & Line State
   const [micReady, setMicReady] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
@@ -162,6 +164,7 @@ export const App: React.FC = () => {
       history.replaceState(null, '', location.pathname);
       const known = list.find(l => l.id === inviteId && l.passcode === secret);
       if (!isSecureLine(inviteId, secret)) setErrorMessage('This old invite needs upgrading. Ask your contact to create a new connection.');
+      else if (list.some(l => l.id === inviteId && l.passcode !== secret)) setErrorMessage('This invite conflicts with a saved connection. Ask your contact for a fresh connection link.');
       else if (!known) {
         setPendingInvite({ lineId: inviteId, pin: secret, senderName: hash.get('from')?.slice(0, 80) || 'Your contact', myName: '' });
         setPendingInviteContactName(hash.get('from')?.slice(0, 80) || 'Your contact');
@@ -273,7 +276,7 @@ export const App: React.FC = () => {
     client.onChatMessage = message => { if (clientRef.current === client) { setChatMessages(prev => [...prev.slice(-199), message]); setHasUnreadChat(true); } };
     client.onProfileChange = profile => { if (clientRef.current === client) setSelectedProfile(profile); };
     client.onContactDeleted = () => { showToast('Your contact removed this connection. You can remove your local copy.'); };
-    client.onError = error => { if (clientRef.current === client) setErrorMessage(error); };
+    client.onError = error => { if (clientRef.current === client) { setErrorMessage(error); if (error.startsWith('Microphone')) { setMicReady(false); setSetupOpen(true); } } };
     void client.start();
     return client;
   };
@@ -492,18 +495,18 @@ export const App: React.FC = () => {
     return `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
   };
 
-  const handleCopyContactLink = (contact: SavedLine, e?: React.MouseEvent) => {
+  const handleCopyContactLink = async (contact: SavedLine, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    navigator.clipboard.writeText(getContactInviteUrl(contact)).catch(() => setErrorMessage('Copy failed. Use the QR code or allow clipboard access.'));
+    try { await navigator.clipboard.writeText(getContactInviteUrl(contact)); } catch { setErrorMessage('Copy failed. Use the QR code or allow clipboard access.'); return; }
     setCopiedLineId(contact.id);
     showToast(`Invite link for "${contact.name}" copied!`);
     setTimeout(() => setCopiedLineId(null), 2500);
   };
 
-  const handleCopyActiveInvite = () => {
+  const handleCopyActiveInvite = async () => {
     const activeContact = savedLines.find((l) => l.id === lineId);
     if (!activeContact) return;
-    navigator.clipboard.writeText(getContactInviteUrl(activeContact)).catch(() => setErrorMessage('Copy failed. Use the QR code or allow clipboard access.'));
+    try { await navigator.clipboard.writeText(getContactInviteUrl(activeContact)); } catch { setErrorMessage('Copy failed. Use the QR code or allow clipboard access.'); return; }
     setCopiedLink(true);
     showToast('Connection invite link copied!');
     setTimeout(() => setCopiedLink(false), 2000);
@@ -545,8 +548,7 @@ export const App: React.FC = () => {
     }
     clientRef.current?.audioManager.resumeAudio();
     setErrorMessage(null);
-    const success = await clientRef.current?.ringPartner(passcode);
-    if (!success) setMicReady(false);
+    await clientRef.current?.ringPartner(passcode);
   };
 
   // Callee answers with 1 tap (no manual PIN typing required)
@@ -555,8 +557,7 @@ export const App: React.FC = () => {
     clientRef.current.audioManager.resumeAudio();
     setErrorMessage(null);
     const pinToUse = passcode || '';
-    const success = await clientRef.current.acceptIncomingCall(pinToUse);
-    if (!success) { setMicReady(false); setSetupOpen(true); }
+    await clientRef.current.acceptIncomingCall(pinToUse);
   };
 
   const handleDeclineCall = () => {

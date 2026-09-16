@@ -9,6 +9,7 @@ interface QrModalProps {
 
 export const QrModal: React.FC<QrModalProps> = ({ isOpen, onClose, inviteUrl }) => {
   const [qrSrc, setQrSrc] = useState<string>('');
+  const [copyError, setCopyError] = useState(false);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -37,8 +38,9 @@ export const QrModal: React.FC<QrModalProps> = ({ isOpen, onClose, inviteUrl }) 
 
   if (!isOpen) return null;
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(inviteUrl);
+  const handleCopy = async () => {
+    setCopyError(false);
+    try { await navigator.clipboard.writeText(inviteUrl); } catch { setCopyError(true); return; }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -79,8 +81,10 @@ export const QrModal: React.FC<QrModalProps> = ({ isOpen, onClose, inviteUrl }) 
           </div>
         )}
 
+        {copyError && <p role="alert">Copy unavailable. Select the invitation below or scan the QR code.</p>}
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <input
+            aria-label="Private invitation link"
             readOnly
             value={inviteUrl}
             className="input-field mono"

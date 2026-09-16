@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import { PrivateSignaling, newLineId, newLineSecret, lineAuth, isSecureLine } from '../src/core/privateLine';
 beforeAll(() => { Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true }); });
@@ -29,5 +29,8 @@ describe('Private invitation and authenticated signaling', () => {
     const packet = await a.seal('call-ring');
     packet.iv[0] ^= 1;
     await expect(b.open('call-ring', packet)).rejects.toThrow();
+    const fresh = await a.seal('call-ring');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 121000);
+    try { await expect(b.open('call-ring', fresh)).rejects.toThrow(/Expired/); } finally { clock.mockRestore(); }
   });
 });
