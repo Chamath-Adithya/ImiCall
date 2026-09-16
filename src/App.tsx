@@ -799,8 +799,10 @@ export const App: React.FC = () => {
     c.name.toLowerCase().includes(searchQuery.trim().toLowerCase())
   );
 
+  const isInCall = callState === 'connecting' || callState === 'connected' || callState === 'reconnecting';
+
   return (
-    <div className="app-container">
+    <div className={`app-container ${isInCall ? 'in-call' : ''}`}>
       {/* Hidden Audio Element for WebRTC remote sound */}
       <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
 
@@ -1362,7 +1364,7 @@ export const App: React.FC = () => {
                           />
                         )}
                       </div>
-                      <div>
+                      <div className="contact-details">
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
                           <span className="contact-name">{contact.name}</span>
                           {isActive && (
@@ -1388,8 +1390,7 @@ export const App: React.FC = () => {
 
                     <div className="contact-actions">
                       <button
-                        className="btn btn-primary"
-                        style={{ padding: '0.4rem 0.75rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                        className="btn btn-primary btn-call"
                         onClick={(e) => handleCallSavedLine(contact, e)}
                         title={`Call ${contact.name}`}
                       >
@@ -1397,8 +1398,7 @@ export const App: React.FC = () => {
                       </button>
 
                       <button
-                        className="btn btn-secondary"
-                        style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}
+                        className="btn btn-secondary btn-action-icon"
                         onClick={(e) => {
                           e.stopPropagation();
                           setShareContact(contact);
@@ -1409,8 +1409,7 @@ export const App: React.FC = () => {
                       </button>
 
                       <button
-                        className="btn btn-danger"
-                        style={{ padding: '0.4rem 0.6rem', fontSize: '0.78rem' }}
+                        className="btn btn-danger btn-action-icon"
                         onClick={(e) => handleDeleteLine(contact.id, e)}
                         title="Delete Contact"
                       >
@@ -1574,8 +1573,25 @@ export const App: React.FC = () => {
             </div>
           </div>
 
-          {/* Live Metrics */}
-          <div className="metrics-strip">
+          {/* Compact Telemetry Chip (Mobile friendly, tap opens diagnostics) */}
+          <div
+            className="call-telemetry-chip"
+            onClick={() => setIsDiagnosticsOpen(true)}
+            role="button"
+            tabIndex={0}
+            title="Tap for Signal Diagnostics & Profiles"
+          >
+            <span className="telemetry-dot" />
+            <span>{networkStats ? `${networkStats.rtt}ms RTT` : 'Direct HD'}</span>
+            <span className="telemetry-divider">•</span>
+            <span>{networkStats ? `${networkStats.packetLoss}% loss` : '0% loss'}</span>
+            <span className="telemetry-divider">•</span>
+            <span>{SIGNAL_PROFILES[selectedProfile].badge}</span>
+            <Activity size={13} style={{ opacity: 0.65, marginLeft: '3px' }} />
+          </div>
+
+          {/* Desktop Live Metrics (hidden on mobile <= 640px) */}
+          <div className="metrics-strip desktop-only">
             <div className="metric-box">
               <div className="metric-label">Latency (RTT)</div>
               <div className="metric-value good">
@@ -1602,8 +1618,8 @@ export const App: React.FC = () => {
             </div>
           </div>
 
-          {/* Profile Switcher */}
-          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+          {/* Desktop Profile Switcher (hidden on mobile <= 640px) */}
+          <div className="profile-switcher-row desktop-only" style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
             {(Object.keys(SIGNAL_PROFILES) as SignalProfile[]).map((key) => (
               <button
                 key={key}

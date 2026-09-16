@@ -71,8 +71,8 @@ export class PushNotificationManager {
       });
 
       return response.ok;
-    } catch (err) {
-      console.warn('[Push] Error subscribing to line push notifications:', err);
+    } catch (err: any) {
+      console.info('[Push] Background push service unavailable:', err?.message || err);
       return false;
     }
   }
