@@ -1,4 +1,4 @@
-export type SignalProfile = 'extreme' | 'balanced' | 'hd';
+export type SignalProfile = 'survival' | 'extreme' | 'balanced' | 'hd';
 
 export interface ProfileConfig {
   id: SignalProfile;
@@ -13,12 +13,13 @@ export interface ProfileConfig {
 }
 
 export const SIGNAL_PROFILES: Record<SignalProfile, ProfileConfig> = {
+  survival: { id: 'survival', name: 'Very weak / 2G', badge: '6 kbps', bitrate: 6000, ptime: 60, maxptime: 60, useFec: true, useDtx: true, description: 'Speech first; reduced quality and fewer packets. Network overhead is additional.' },
   extreme: {
     id: 'extreme',
     name: 'Low Signal / 2G',
     badge: '⚡ 10 kbps',
     bitrate: 10000,
-    ptime: 40,
+    ptime: 60,
     maxptime: 60,
     useFec: true,
     useDtx: true,

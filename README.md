@@ -4,7 +4,7 @@ A lightweight, account-free, two-person browser calling app with a local phone b
 
 ## Run
 
-`npm install`, `npm run build`, then `npm start`. Open http://localhost:8080. Production requires HTTPS for microphone access and notifications. Use the Node server in `server/signaling.js`; the legacy Cloudflare worker is unsupported by protocol v2.
+Use Node 24 (see `.nvmrc`; minimum 22.12). Run `npm install`, then `npm start`. Open http://localhost:8080. Production requires HTTPS for microphone access and notifications. Use the Node server in `server/signaling.js`; the legacy Cloudflare worker is unsupported by protocol v2.
 
 ## Privacy and security model
 
@@ -20,7 +20,7 @@ A lightweight, account-free, two-person browser calling app with a local phone b
 ## Deployment configuration
 
 - `PORT`: defaults to 8080.
-- `PUBLIC_URL`: real HTTPS deployment origin. Enables the sitemap and HSTS. Do not use a guessed domain.
+- `PUBLIC_URL`: real HTTPS deployment origin. Enables the sitemap and HSTS, and authorizes its Host/Origin. Set `ALLOWED_ORIGINS` to comma-separated additional exact origins when needed. Public tunnels must be explicitly configured; arbitrary Host headers are rejected.
 - `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`: configure a fresh stable Web Push key pair and operator contact. Without keys, the server generates a memory-only pair for local use; restarts invalidate previous subscriptions. Generate keys with `npx web-push generate-vapid-keys`. Never commit private keys. The previously hardcoded key pair must be treated as compromised and replaced.
 - `TURN_URLS`, `TURN_SECRET`: optional comma-separated relay URLs and a coturn-compatible shared secret. The server issues ten-minute HMAC credentials; the secret never reaches clients. Configure relay quotas and rate limits before launch. No relay credentials are included by default, so restrictive networks may not connect.
 
@@ -58,6 +58,20 @@ Calls default to `iceTransportPolicy: relay`, with STUN entries removed and cand
 
 Settings → Open temporary session creates a separate tab. Its contact/preset store is memory-only, background push is disabled, and reload, connected-call termination or End & forget drops its in-memory data. A sessionStorage flag contains only the temporary-mode marker. Existing regular contacts, browser visit history, downloaded backups, clipboard, OS memory and other endpoints are not erased. This is data minimization, not a forensic secure-erasure claim.
 
-Recent interval packet loss now drives quality reporting; three poor samples lower the profile to 10 kbps. The sender bitrate is capped on connection and profile changes. Real network overhead, loss, latency and relay capacity can still make a 2G call fail.
+Recent interval packet loss now drives quality reporting; three poor samples lower the profile to 10 kbps, then 6 kbps if poor conditions continue. The sender bitrate is capped on connection and profile changes. Real network overhead, loss, latency and relay capacity can still make a 2G call fail.
 
 `node scripts/verifyPrivacyModes.mjs` verifies no-relay fail-closed behavior before peer connection or mic acquisition and temporary-storage isolation. Existing local call tests explicitly opt into Direct mode because loopback tests have no TURN service.
+
+## Weak-network communication
+
+Choose **Next call quality → Very weak / 2G** before calling: Opus is capped at 6 kbps, with 60 ms packets and narrowband playback preference. The 10 kbps profile also requests 60 ms packets. DTX and FEC are negotiated preferences; actual encoder behavior depends on the browser. Profile changes during a call cap bitrate but do not renegotiate packet duration. Packet, encryption and relay overhead mean total bandwidth exceeds the codec bitrate. More packet duration reduces overhead but increases delay and the audio lost with each dropped packet.
+
+If voice is unusable, open a contact and choose **Tiny messages**. Both people must keep the app open. Messages use the encrypted signaling connection without microphone permission, WebRTC or TURN. Each message is limited to 500 characters / 2,000 UTF-8 bytes. Delivery means receipt by the device, not that a person read it. A missing receipt triggers retries at ten-second intervals, up to three attempts. Duplicates are suppressed. Messages expire from app memory after 90 seconds; closing the panel clears its local messages. There is no durable offline mailbox or message history. Device compromise, screenshots and recipient copies remain possible.
+
+Static responses use cached Brotli compression where accepted, with gzip fallback. Optional features remain lazy-loaded; no neural model is downloaded. The service worker reuses the installed interface, while communication requires a live network.
+
+`node scripts/verifyTinyMessages.mjs` checks encrypted two-browser delivery with 6 kbps application-message pacing, added latency and a deliberately dropped first receipt. This is not a real cellular network test. `node scripts/verifySpeed.mjs` measures a separate 150 kbps cold-load simulation.
+
+## Server hardening
+
+The server validates Host and WebSocket Origin, bounds HTTP bodies, signaling frames, queues and rates, and constrains push endpoints and subscription keys. Public configuration contains no TURN credentials. `/api/ice` issues short-lived credentials only for a room-authenticated device with an active socket, subject to issuance limits. Anonymous room creation still requires operator-level relay quotas and abuse protection. TLS, infrastructure logs and denial-of-service protection remain deployment responsibilities.

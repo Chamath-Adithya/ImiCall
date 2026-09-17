@@ -28,7 +28,9 @@ export function tuneSdpForLowBandwidth(sdp: string, profileKey: SignalProfile = 
     usedtx: profile.useDtx ? 1 : 0,       // Silence suppression saves cellular data
   };
 
-  if (profile.id === 'extreme') {
+  if (profile.id === 'survival') {
+    opusParams['maxplaybackrate'] = 8000;
+  } else if (profile.id === 'extreme') {
     opusParams['maxplaybackrate'] = 16000; // Wideband speech (warm and intelligible)
   } else if (profile.id === 'balanced') {
     opusParams['maxplaybackrate'] = 24000;

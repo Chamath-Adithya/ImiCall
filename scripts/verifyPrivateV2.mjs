@@ -27,10 +27,16 @@ try {
  await b.waitForFunction(()=>document.body.innerText.includes('Connect & Save'));
  await b.evaluate(()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Connect & Save')).click());
  await a.waitForFunction(()=>document.body.innerText.includes('Available now'));
+ await a.select('[aria-label="Next call quality"]','survival');
  await a.click('.main-call');
  await b.waitForFunction(()=>document.body.innerText.includes('Incoming Call...'));
  await b.evaluate(()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Answer').click());
  await Promise.all([a,b].map(p=>p.waitForFunction(()=>document.body.innerText.includes('Call Active'),{timeout:20000})));
+ await a.waitForFunction(()=>window.__pcs[0].getSenders().find(s=>s.track?.kind==='audio').getParameters().encodings[0].maxBitrate===6000);
+ assert.ok(await a.evaluate(()=>window.__pcs[0].localDescription.sdp.includes('a=ptime:60')));
+ const packetSample=async()=>a.evaluate(async()=>{const stats=await window.__pcs[0].getStats();let value;stats.forEach(s=>{if(s.type==='outbound-rtp'&&s.kind==='audio')value={packets:s.packetsSent,time:s.timestamp};});return value;});
+ const packetStart=await packetSample();await new Promise(r=>setTimeout(r,1800));const packetEnd=await packetSample();console.log(`Observed audio packets per second: ${((packetEnd.packets-packetStart.packets)*1000/(packetEnd.time-packetStart.time)).toFixed(1)} (fake continuous microphone).`);
+ console.log('6 kbps profile connected with a 60 ms SDP packet interval and a verified 6 kbps encoder cap.');
  console.log('Two browsers connected with private v2 invites (explicit direct mode for local testing).');
  await a.select('[aria-label="Connection quality"]','extreme');
  await a.waitForFunction(()=>window.__pcs[0].getSenders().find(s=>s.track?.kind==='audio').getParameters().encodings[0].maxBitrate===10000);

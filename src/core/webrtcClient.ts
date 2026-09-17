@@ -1,6 +1,7 @@
 import { SignalProfile, SIGNAL_PROFILES, NetworkStats, ChatMessage, CallState } from './types';
 import { tuneSdpForLowBandwidth } from './sdpTuner';
 import { PrivateSignaling, lineAuth } from './privateLine';
+import { TinyMessages } from './tinyMessages';
 import { StatsMonitor } from './statsMonitor';
 import { AudioManager } from './audioManager';
 import { SoundManager } from './soundManager';
@@ -32,6 +33,9 @@ export class WebRTCClient {
   private hasRelay = false;
   private iceCache: { servers: RTCIceServer[]; expires: number } | null = null;
   private queuedMessages = 0;
+  private tiny: TinyMessages | null = null;
+  public onTinyMessage: (()=>void) | null = null;
+  public tinyMessages() { return this.tiny ||= new TinyMessages((type,payload)=>this.sendSignal(type,payload),()=>!this.closed && this.peerInRoom && this.ws?.readyState===WebSocket.OPEN); }
   private ringTimer: ReturnType<typeof setTimeout> | null = null;
   private sendQueue = Promise.resolve();
   private receiveQueue = Promise.resolve();
@@ -155,6 +159,7 @@ export class WebRTCClient {
     this.sendQueue = this.sendQueue.then(async () => {
       const envelope = await this.secure.seal(type, payload);
       if (this.ws?.readyState !== WebSocket.OPEN) throw new Error('Connection unavailable. Please wait and try again.');
+      if(this.closed || this.ws.bufferedAmount > 65536) throw new Error('Connection is congested. Wait before retrying.');
       this.ws.send(JSON.stringify({ type, payload: envelope }));
     }).catch((error) => { this.onError?.(error.message); });
     return this.sendQueue;
@@ -162,6 +167,10 @@ export class WebRTCClient {
 
   private async handleSignalingMessage(msg: any) {
     switch (msg.type) {
+      case 'tiny-message':
+      case 'tiny-ack':
+        if(this.tinyMessages().receive(msg.type,msg.payload))this.onTinyMessage?.();
+        break;
       case 'joined':
         this.isInitiator = msg.isInitiator;
         this.peerInRoom = msg.peersCount > 1;
@@ -230,7 +239,7 @@ export class WebRTCClient {
         break;
 
       case 'profile-change':
-        if (msg.payload && ['balanced', 'extreme', 'hd'].includes(msg.payload.profile)) {
+        if (msg.payload && ['balanced', 'extreme', 'survival', 'hd'].includes(msg.payload.profile)) {
           const requested = msg.payload.profile as SignalProfile;
           if (SIGNAL_PROFILES[requested].bitrate < SIGNAL_PROFILES[this.currentProfile].bitrate) {
             this.currentProfile = requested; this.limitSenderBitrate();
@@ -598,7 +607,7 @@ export class WebRTCClient {
     let poorSamples = 0;
     this.statsMonitor.start(1000, (stats) => {
       poorSamples = ['poor','critical'].includes(stats.qualityRating) ? poorSamples + 1 : 0;
-      if (poorSamples >= 3 && this.currentProfile !== 'extreme') { this.setProfile('extreme'); poorSamples = 0; }
+      if (poorSamples >= 3 && this.currentProfile !== 'survival') { this.setProfile(this.currentProfile==='extreme'?'survival':'extreme'); poorSamples = 0; }
       if (this.onStatsUpdate) {
         this.onStatsUpdate(stats);
       }
@@ -651,6 +660,7 @@ export class WebRTCClient {
   }
 
   public close() {
+    this.tiny?.close(); this.tiny=null;
     this.closed = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.soundManager.stopAll();

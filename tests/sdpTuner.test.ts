@@ -21,10 +21,11 @@ describe('SDP Tuner for Low Bandwidth', () => {
     expect(tuned).toContain('useinbandfec=1');
     expect(tuned).toContain('usedtx=1');
     expect(tuned).toContain('maxplaybackrate=16000');
-    expect(tuned).toContain('a=ptime:40');
+    expect(tuned).toContain('a=ptime:60');
     expect(tuned).toContain('a=maxptime:60');
   });
 
+  it('supports the 6 kbps speech-first profile',()=>{const tuned=tuneSdpForLowBandwidth(sampleSdp,'survival');expect(tuned).toContain('maxaveragebitrate=6000');expect(tuned).toContain('maxplaybackrate=8000');expect(tuned).toContain('a=ptime:60');});
   it('should inject balanced profile parameters correctly', () => {
     const tuned = tuneSdpForLowBandwidth(sampleSdp, 'balanced');
 

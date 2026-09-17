@@ -21,6 +21,7 @@ describe('Actual production relay', () => {
    expect((await fetch(base + '/api/push-subscribe', { method: 'POST', body: JSON.stringify({ roomId: 'nope' }) })).status).toBe(403);
    expect((await fetch(base + '/api/config', { headers: { Origin: 'https://evil.invalid' } })).status).toBe(403);
  });
+ it('serves cached Brotli to capable browsers with a gzip fallback',async()=>{const br=await fetch(base,{headers:{'Accept-Encoding':'br, gzip'}});expect(br.headers.get('content-encoding')).toBe('br');expect(await br.text()).toContain('ImiCall');const gzip=await fetch(base,{headers:{'Accept-Encoding':'br;q=0, gzip'}});expect(gzip.headers.get('content-encoding')).toBe('gzip');expect(await gzip.text()).toContain('ImiCall');});
  it('rejects a WebSocket handshake with an untrusted Origin', async()=>{
    const rejected = new WebSocket(`ws://localhost:${port}/ws`, {origin:'https://evil.invalid'});
    await new Promise<void>((resolve,reject)=>{rejected.once('error',()=>resolve());rejected.once('open',()=>{rejected.terminate();reject(new Error('Unexpected origin accepted'));});});

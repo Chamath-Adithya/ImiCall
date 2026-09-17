@@ -1,3 +1,4 @@
+import type { TinyMessages } from './core/tinyMessages';
 import { OptionalFeatureBoundary } from './components/OptionalFeatureBoundary';
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -52,6 +53,7 @@ const CameraQrScanner = React.lazy(() =>
   import('./components/CameraQrScanner').then((m) => ({ default: m.CameraQrScanner }))
 );
 
+const TinyMessagePanel = React.lazy(()=>import('./components/TinyMessagePanel').then(m=>({default:m.TinyMessagePanel})));
 const DeviceSettings = React.lazy(() => import('./components/DeviceSettings').then(m => ({ default: m.DeviceSettings })));
 
 export interface SavedLine {
@@ -74,6 +76,8 @@ export const App: React.FC = () => {
   // Phone Book & Line State
   const [detailOpen, setDetailOpen] = useState(false);
   const [deviceSettingsOpen, setDeviceSettingsOpen] = useState(false);
+  const [tinyChannel, setTinyChannel] = useState<TinyMessages|null>(null);
+  const [tinyOpen, setTinyOpen] = useState(false);
   const [voiceOnly, setVoiceOnly] = useState(false);
   const [voicePreset, setVoicePreset] = useState<VoicePreset>(NATURAL);
   const voiceRef = useRef<VoicePreset>(NATURAL);
@@ -174,7 +178,7 @@ export const App: React.FC = () => {
     }).catch(() => { if (!cancelled) setSetupOpen(true); });
     if (!navigator.permissions) setSetupOpen(true);
     const connection = (navigator as any).connection;
-    if (connection?.saveData || ['2g', 'slow-2g'].includes(connection?.effectiveType)) setSelectedProfile('extreme');
+    if (connection?.saveData || ['2g', 'slow-2g'].includes(connection?.effectiveType)) setSelectedProfile('survival');
     runtimeConfig().then(data => { if (!cancelled) setServerPublicUrl(data.publicUrl || ''); }).catch(() => {});
     let list: SavedLine[] = [];
     try {
@@ -310,6 +314,7 @@ export const App: React.FC = () => {
     client.onPeerStatusChange = online => { setOnlineLines(prev => ({ ...prev, [line.id]: online })); if (clientRef.current === client) setIsPeerOnline(online); };
     client.onStatsUpdate = stats => { if (clientRef.current === client) setNetworkStats(stats); };
     client.onRemoteStream = stream => { if (clientRef.current === client && remoteAudioRef.current) client.audioManager.setupRemoteAudio(stream, remoteAudioRef.current); };
+    client.onTinyMessage = () => { if(!localStore.isTemporary())showToast('A private tiny message arrived. Open that contact’s Tiny messages.'); };
     client.onChatMessage = message => { if (clientRef.current === client) { setChatMessages(prev => [...prev.slice(-199), message]); setHasUnreadChat(true); } };
     client.onProfileChange = profile => { if (clientRef.current === client) setSelectedProfile(profile); };
     client.onContactDeleted = () => { showToast('Your contact removed this connection. You can remove your local copy.'); };
@@ -1143,7 +1148,7 @@ export const App: React.FC = () => {
                   <span className="call-hint">{isPeerOnline ? 'Available now' : 'Share your invite to get connected'}</span>
                 </>}
               </div>
-              <div className="connection-tools">
+              <label className="input-label">Voice quality<select className="input-field" aria-label="Next call quality" value={selectedProfile} onChange={e=>handleProfileSwitch(e.target.value as SignalProfile)}>{Object.values(SIGNAL_PROFILES).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label><div className="connection-tools"><button className="btn btn-secondary" disabled={offline} onClick={()=>{setTinyChannel(ensureClient(activeContact).tinyMessages());setTinyOpen(true);}}><MessageSquare size={18}/>Tiny messages</button>
                 <button className="btn btn-share" onClick={() => shareNative(activeContact)}><Share2 size={18} /> Share invite</button>
                 <button className="btn btn-secondary" title="Show QR Code" onClick={() => setIsQrOpen(true)}><QrCode size={18} /> QR code</button>
               </div>
@@ -1269,8 +1274,9 @@ export const App: React.FC = () => {
       </main>}
 
       {/* On-Demand Lazy Loaded Modals for Instant 2G Loading */}
-      <OptionalFeatureBoundary key={`${deviceSettingsOpen}-${isDiagnosticsOpen}-${isQrOpen}-${isChatOpen}-${isQrScannerOpen}`} onClose={() => { setDeviceSettingsOpen(false); setIsDiagnosticsOpen(false); setIsQrOpen(false); setIsChatOpen(false); setIsQrScannerOpen(false); }}>
+      <OptionalFeatureBoundary key={`${tinyOpen}-${deviceSettingsOpen}-${isDiagnosticsOpen}-${isQrOpen}-${isChatOpen}-${isQrScannerOpen}`} onClose={() => { setTinyOpen(false); setDeviceSettingsOpen(false); setIsDiagnosticsOpen(false); setIsQrOpen(false); setIsChatOpen(false); setIsQrScannerOpen(false); }}>
       <React.Suspense fallback={<div className="toast-banner" role="status">Opening… On a slow connection this may take a moment.</div>}>
+        {tinyOpen && tinyChannel && <TinyMessagePanel channel={tinyChannel} onClose={()=>setTinyOpen(false)}/>}
         {deviceSettingsOpen && <DeviceSettings lines={savedLines} voice={voicePreset} onVoice={applyVoice} onImport={importLines} onClear={clearDevice} onClose={() => setDeviceSettingsOpen(false)} voiceOnly={voiceOnly} />}
         {isDiagnosticsOpen && (
           <DiagnosticsModal

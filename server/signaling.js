@@ -39,8 +39,9 @@ const compressed = new Map();
 function serve(file, req, res) {
   const stat = fs.statSync(file);
   const hashed = /[/\\]assets[/\\]/.test(file);
-  const gzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
-  const key = `${file}:${stat.mtimeMs}:${gzip}`;
+  const accepts = new Map((req.headers['accept-encoding'] || '').split(',').map(item => { const [name, ...params] = item.trim().split(';'); const q = params.find(p => p.trim().startsWith('q=')); return [name, q ? Number(q.trim().slice(2)) : 1]; }));
+  const encoding = (accepts.get('br') || 0) > 0 ? 'br' : (accepts.get('gzip') || 0) > 0 ? 'gzip' : '';
+  const key = `${file}:${stat.mtimeMs}:${encoding}`;
   let data = compressed.get(key);
   if (!data) {
     let raw = fs.readFileSync(file);
@@ -48,11 +49,11 @@ function serve(file, req, res) {
       const pathname = path.basename(file) === 'index.html' ? '/' : '/' + path.basename(file);
       raw = Buffer.from(raw.toString().replace('</head>', `<link rel="canonical" href="${publicUrl}${pathname}"><meta property="og:url" content="${publicUrl}${pathname}"></head>`));
     }
-    data = gzip ? zlib.gzipSync(raw) : raw;
+    data = encoding === 'br' ? zlib.brotliCompressSync(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } }) : encoding === 'gzip' ? zlib.gzipSync(raw) : raw;
     if (compressed.size > 100) compressed.clear();
     compressed.set(key, data);
   }
-  res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream', 'Cache-Control': hashed ? 'public,max-age=31536000,immutable' : 'no-cache', Vary: 'Accept-Encoding', ...(gzip ? { 'Content-Encoding': 'gzip' } : {}) });
+  res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream', 'Cache-Control': hashed ? 'public,max-age=31536000,immutable' : 'no-cache', Vary: 'Accept-Encoding', ...(encoding ? { 'Content-Encoding': encoding } : {}) });
   res.end(data);
 }
 async function bodyOf(req) {
@@ -124,7 +125,7 @@ server.on('upgrade', (req, socket, head) => {
   if (req.url !== '/ws' || (!validRequestOrigin(req) || !req.headers.origin) || wss.clients.size >= 1000) { socket.destroy(); return; }
   wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws));
 });
-const allowedTypes = new Set(['call-ring', 'call-accept', 'call-decline', 'call-cancel', 'call-ended', 'offer', 'answer', 'candidate', 'profile-change', 'contact-deleted']);
+const allowedTypes = new Set(['tiny-message', 'tiny-ack', 'call-ring', 'call-accept', 'call-decline', 'call-cancel', 'call-ended', 'offer', 'answer', 'candidate', 'profile-change', 'contact-deleted']);
 const send = (ws, msg) => { if (ws.bufferedAmount > 256 * 1024) { ws.terminate(); return; } if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
 wss.on('connection', ws => {
   let current = null, device = '', count = 0, windowStart = Date.now();
