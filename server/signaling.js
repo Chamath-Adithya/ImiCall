@@ -10,6 +10,14 @@ import webpush from 'web-push';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist');
 const port = Number(process.env.PORT || 8080);
 const publicUrl = (() => { try { const url = new URL(process.env.PUBLIC_URL); return ['http:', 'https:'].includes(url.protocol) ? url.origin : ''; } catch { return ''; } })();
+const allowedOrigins = new Set([`http://localhost:${port}`, `http://127.0.0.1:${port}`, `http://[::1]:${port}`, publicUrl, ...(process.env.ALLOWED_ORIGINS || '').split(',')].filter(Boolean).map(value => {
+  const u = new URL(value.trim());
+  if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password || u.origin !== value.trim()) throw new Error('Origins must be exact HTTP(S) origins');
+  return u.origin;
+}));
+const allowedHosts = new Set([...allowedOrigins].map(origin => new URL(origin).host));
+const validRequestOrigin = req => allowedHosts.has(req.headers.host) && (!req.headers.origin || allowedOrigins.has(req.headers.origin));
+let mintWindow = Date.now(), minted = 0, inFlightPush = 0;
 const keys = process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
   ? { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY }
   : webpush.generateVAPIDKeys();
@@ -22,7 +30,7 @@ function relayConfig() {
   const username = `${Math.floor(Date.now() / 1000) + 600}:${randomBytes(8).toString('hex')}`;
   return [{ urls: process.env.TURN_URLS.split(',').filter(url => /^turns?:/.test(url)), username, credential: createHmac('sha1', process.env.TURN_SECRET).update(username).digest('base64') }];
 }
-const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const validRoom = id => typeof id === 'string' && /^line-[a-f0-9]{32}$/.test(id);
 const validToken = token => typeof token === 'string' && /^[a-f0-9]{64}$/.test(token);
 const json = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
@@ -48,9 +56,11 @@ function serve(file, req, res) {
   res.end(data);
 }
 async function bodyOf(req) {
-  let body = '';
-  for await (const chunk of req) { body += chunk; if (body.length > 12000) throw new Error('Body too large'); }
-  return JSON.parse(body);
+  const chunks = []; let size = 0;
+  for await (const chunk of req) { size += chunk.length; if (size > 12000) throw new Error('Body too large'); chunks.push(chunk); }
+  const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid body');
+  return value;
 }
 function allowedEndpoint(endpoint) {
   try {
@@ -63,22 +73,29 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Permissions-Policy', 'microphone=(self), camera=(self), geolocation=()');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+  res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ${[...allowedOrigins].map(origin => origin.replace(/^http/, 'ws')).join(' ')}; media-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`);
   if (publicUrl.startsWith('https:')) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
-  const origin = req.headers.origin;
-  if (origin && ![publicUrl, `http://${req.headers.host}`, `https://${req.headers.host}`].includes(origin)) return json(res, 403, { error: 'Origin not allowed' });
-  const url = new URL(req.url, 'http://localhost');
+  if (!validRequestOrigin(req)) return json(res, 403, { error: 'Origin not allowed' });
+  let url; try { url = new URL(req.url, 'http://localhost'); } catch { return json(res, 400, { error: 'Invalid URL' }); }
   if (url.search) res.setHeader('X-Robots-Tag', 'noindex, nofollow');
   if (url.pathname === '/robots.txt' && publicUrl) { res.writeHead(200, { 'Content-Type': 'text/plain' }); return res.end(`User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /ws\nDisallow: /health\nSitemap: ${publicUrl}/sitemap.xml\n`); }
   if (url.pathname === '/health') return json(res, 200, { status: 'ok' });
-  if (url.pathname === '/api/config') return json(res, 200, { publicUrl, vapidPublicKey: keys.publicKey, pushRetentionHours: 24, iceServers: relayConfig() });
-  if (req.method === 'POST' && ['/api/push-subscribe', '/api/push-unsubscribe'].includes(url.pathname)) {
+  if (url.pathname === '/api/config') return json(res, 200, { publicUrl, vapidPublicKey: keys.publicKey, pushRetentionHours: 24, relayConfigured: !!(process.env.TURN_URLS && process.env.TURN_SECRET) });
+  if (req.method === 'POST' && ['/api/ice', '/api/push-subscribe', '/api/push-unsubscribe'].includes(url.pathname)) {
     try {
       const { roomId, subscription, deviceId } = await bodyOf(req);
       const room = rooms.get(roomId);
       if (!room || !equal(req.headers.authorization?.replace(/^Bearer /, ''), room.auth) || !/^[a-f0-9]{32}$/.test(deviceId || '')) return json(res, 403, { error: 'Open your private connection first' });
+      if (!url.pathname.endsWith('unsubscribe') && ![...room.clients].some(client => client.deviceId === deviceId)) return json(res, 403, { error: 'Device must have an active connection' });
+      if (url.pathname === '/api/ice') {
+        if (Date.now() - mintWindow > 60000) { mintWindow = Date.now(); minted = 0; }
+        const previous = room.iceIssued.get(deviceId) || 0;
+        if (Date.now() - previous < 10000 || minted >= 120) return json(res, 429, { error: 'Relay credential rate limit' });
+        room.iceIssued.set(deviceId, Date.now()); minted++;
+        return json(res, 200, { iceServers: relayConfig() || [] });
+      }
       if (url.pathname.endsWith('unsubscribe')) { room.push.delete(deviceId); return json(res, 200, { success: true }); }
-      if (!allowedEndpoint(subscription?.endpoint) || typeof subscription?.keys?.p256dh !== 'string' || typeof subscription?.keys?.auth !== 'string') return json(res, 400, { error: 'Unsupported push subscription' });
+      if (!allowedEndpoint(subscription?.endpoint) || typeof subscription?.keys?.p256dh !== 'string' || typeof subscription?.keys?.auth !== 'string' || !/^[A-Za-z0-9_-]{87}=?$/.test(subscription.keys.p256dh) || !/^[A-Za-z0-9_-]{22}={0,2}$/.test(subscription.keys.auth)) return json(res, 400, { error: 'Unsupported push subscription' });
       if (room.push.size >= 2 && !room.push.has(deviceId)) return json(res, 409, { error: 'Two devices are already subscribed' });
       room.push.set(deviceId, { subscription, expires: Date.now() + DAY });
       return json(res, 200, { success: true });
@@ -100,12 +117,13 @@ const server = http.createServer(async (req, res) => {
   serve(file, req, res);
 });
 const wss = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024, perMessageDeflate: false });
+server.requestTimeout = 15000; server.headersTimeout = 10000; server.keepAliveTimeout = 5000; server.maxConnections = 1200;
 server.on('upgrade', (req, socket, head) => {
-  if (req.url !== '/ws' || (req.headers.origin && ![publicUrl, `http://${req.headers.host}`, `https://${req.headers.host}`].includes(req.headers.origin)) || wss.clients.size >= 1000) { socket.destroy(); return; }
+  if (req.url !== '/ws' || (!validRequestOrigin(req) || !req.headers.origin) || wss.clients.size >= 1000) { socket.destroy(); return; }
   wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws));
 });
 const allowedTypes = new Set(['call-ring', 'call-accept', 'call-decline', 'call-cancel', 'call-ended', 'offer', 'answer', 'candidate', 'profile-change', 'contact-deleted']);
-const send = (ws, msg) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
+const send = (ws, msg) => { if (ws.bufferedAmount > 256 * 1024) { ws.terminate(); return; } if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
 wss.on('connection', ws => {
   let current = null, device = '', count = 0, windowStart = Date.now();
   ws.alive = true;
@@ -121,20 +139,20 @@ wss.on('connection', ws => {
         let room = rooms.get(msg.roomId);
         if (!room) {
           if (rooms.size >= 5000) return ws.close(1013);
-          room = { auth: msg.auth, clients: new Set(), push: new Map(), pending: null, lastRing: new Map() };
+          room = { auth: msg.auth, clients: new Set(), push: new Map(), pending: null, lastRing: new Map(), iceIssued: new Map() };
           rooms.set(msg.roomId, room);
         }
         if (!equal(room.auth, msg.auth)) return ws.close(1008);
         if (room.clients.size >= 2) { send(ws, { type: 'room-full' }); return ws.close(1008); }
         current = msg.roomId; device = msg.deviceId; clearTimeout(joinTimeout);
-        room.clients.add(ws);
+        ws.deviceId = device; room.clients.add(ws);
         send(ws, { type: 'joined', isInitiator: room.clients.size === 1, peersCount: room.clients.size });
         for (const peer of room.clients) if (peer !== ws) send(peer, { type: 'peer-joined' });
         if (room.pending && room.pending.expires > Date.now() && room.pending.device !== device) send(ws, room.pending.message);
         return;
       }
       const room = rooms.get(current);
-      if (!room || !room.clients.has(ws) || !allowedTypes.has(msg.type) || !Array.isArray(msg.payload?.iv) || msg.payload.iv.length !== 12 || typeof msg.payload?.data !== 'string') return;
+      if (!room || !room.clients.has(ws) || !allowedTypes.has(msg.type) || !Array.isArray(msg.payload?.iv) || msg.payload.iv.length !== 12 || typeof msg.payload?.data !== 'string' || msg.payload.iv.some(n => !Number.isInteger(n) || n < 0 || n > 255) || msg.payload.data.length > 100000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(msg.payload.data) || msg.payload.data.length % 4 !== 0) return ws.close(1008, 'Invalid signal');
       const message = { type: msg.type, payload: msg.payload };
       if (msg.type === 'call-ring') {
         if (Date.now() - (room.lastRing.get(device) || 0) < 3000) { send(ws, { type: 'error', message: 'Please wait a few seconds before calling again.' }); return; }
@@ -142,10 +160,11 @@ wss.on('connection', ws => {
         room.lastRing.set(device, Date.now());
         room.pending = { device, message, expires: Date.now() + 90000 };
         for (const [target, entry] of room.push) {
-          if (target === device || entry.expires <= Date.now()) continue;
-          webpush.sendNotification(entry.subscription, JSON.stringify({ title: 'Incoming ImiCall', body: 'Someone on your private line is calling. Open to answer.', url: `/#wake=${current}` }), { TTL: 90, urgency: 'high' }).catch(error => {
+          if (target === device || entry.expires <= Date.now() || inFlightPush >= 32) continue;
+          inFlightPush++;
+          webpush.sendNotification(entry.subscription, JSON.stringify({ title: 'Incoming ImiCall', body: 'Someone on your private line is calling. Open to answer.', url: `/#wake=${current}` }), { TTL: 90, urgency: 'high', timeout: 5000 }).catch(error => {
             if ([404, 410].includes(error.statusCode)) room.push.delete(target);
-          });
+          }).finally(() => { inFlightPush--; });
         }
       }
       if (['call-accept', 'call-cancel', 'call-ended', 'call-decline'].includes(msg.type)) room.pending = null;
@@ -158,6 +177,7 @@ wss.on('connection', ws => {
     const room = rooms.get(current);
     if (!room) return;
     room.clients.delete(ws);
+    room.iceIssued.delete(device);
     if (room.pending?.device === device) room.pending = null;
     for (const peer of room.clients) send(peer, { type: 'peer-left' });
     if (!room.clients.size && !room.push.size) rooms.delete(current);

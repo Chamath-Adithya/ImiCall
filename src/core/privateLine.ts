@@ -28,7 +28,7 @@ export class PrivateSignaling {
     return { iv: Array.from(iv), data: btoa(String.fromCharCode(...new Uint8Array(encrypted))) };
   }
   async open(type: string, envelope: any): Promise<any> {
-    if (!Array.isArray(envelope?.iv) || envelope.iv.length !== 12 || typeof envelope.data !== 'string' || envelope.data.length > 100000) throw new Error('Invalid encrypted signal');
+    if (!Array.isArray(envelope?.iv) || envelope.iv.length !== 12 || envelope.iv.some((n: unknown) => typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > 255) || typeof envelope.data !== 'string' || envelope.data.length > 100000) throw new Error('Invalid encrypted signal');
     const decoded = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(envelope.iv), additionalData: encoder.encode(`${this.room}:${type}`) }, this.key, Uint8Array.from(atob(envelope.data), c => c.charCodeAt(0)));
     const message = JSON.parse(new TextDecoder().decode(decoded));
     if (typeof message.sender !== 'string' || !/^[a-f0-9]{32}$/.test(message.sender) || message.sender === this.sender || !Number.isSafeInteger(message.sequence) || !Number.isFinite(message.time) || Math.abs(Date.now() - message.time) > 120000 || message.sequence <= (this.received.get(message.sender) || 0)) throw new Error('Expired or replayed signal');

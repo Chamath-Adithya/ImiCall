@@ -30,6 +30,8 @@ export class WebRTCClient {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private hasRelay = false;
+  private iceCache: { servers: RTCIceServer[]; expires: number } | null = null;
+  private queuedMessages = 0;
   private ringTimer: ReturnType<typeof setTimeout> | null = null;
   private sendQueue = Promise.resolve();
   private receiveQueue = Promise.resolve();
@@ -65,10 +67,23 @@ export class WebRTCClient {
 
   setRelayOnly(value: boolean) { if (!['idle','waiting','error','disconnected'].includes(this.state)) throw new Error('End the call before changing IP protection.'); this.options.relayOnly = value; }
 
+  private async relayServers(): Promise<RTCIceServer[]> {
+    if (this.options.iceServers) return this.options.iceServers;
+    if (this.iceCache && this.iceCache.expires > Date.now()) return this.iceCache.servers;
+    const runtime = await runtimeConfig();
+    if (!runtime.relayConfigured) return [];
+    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch('/api/ice', { method: 'POST', cache: 'no-store', signal: controller.signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.auth}` }, body: JSON.stringify({ roomId: this.options.roomId, deviceId: deviceId() }) });
+      if (!response.ok) throw new Error('Private relay access is unavailable. Reconnect and try again.');
+      const { iceServers } = await response.json();
+      if (!Array.isArray(iceServers)) throw new Error('Invalid relay configuration');
+      this.iceCache = { servers: iceServers, expires: Date.now() + 300000 }; return iceServers;
+    } finally { clearTimeout(timeout); }
+  }
   private async checkRelay() {
     if (this.options.relayOnly === false) return;
-    const runtime = await runtimeConfig();
-    privateIceConfig(this.options.iceServers || runtime.iceServers || [], true);
+    privateIceConfig(await this.relayServers(), true);
   }
 
   getState(): CallState {
@@ -108,13 +123,16 @@ export class WebRTCClient {
       this.ws?.send(JSON.stringify({ type: 'join', roomId: this.options.roomId, auth: this.auth, deviceId: deviceId() }));
     };
     this.ws.onmessage = (event) => {
+      if (typeof event.data !== 'string' || event.data.length > 131072 || this.queuedMessages >= 32) { this.close(); this.setState('error'); this.onError?.('Connection stopped: incoming message limit exceeded.'); return; }
+      this.queuedMessages++;
       this.receiveQueue = this.receiveQueue.then(async () => {
+        if (this.closed) return;
         const msg = JSON.parse(event.data);
         if (!['joined', 'peer-joined', 'peer-left', 'room-full', 'error'].includes(msg.type)) {
           msg.payload = await this.secure.open(msg.type, msg.payload);
         }
         await this.handleSignalingMessage(msg);
-      }).catch(() => { this.onError?.('A connection message could not be verified. Please reconnect if the call does not continue.'); });
+      }).catch(() => { this.onError?.('A connection message could not be verified. Please reconnect if the call does not continue.'); }).finally(() => { this.queuedMessages--; });
     };
 
     this.ws.onerror = (err) => {
@@ -363,9 +381,9 @@ export class WebRTCClient {
       { urls: 'stun:stun.cloudflare.com:3478' },
     ];
 
-    const runtime = await runtimeConfig().catch(() => ({} as { iceServers?: RTCIceServer[] }));
+    const servers = await this.relayServers().catch(error => { if (this.options.relayOnly !== false) { this.endCall(); throw error; } return []; });
     let config: RTCConfiguration;
-    try { config = privateIceConfig(this.options.iceServers || runtime.iceServers || defaultIceServers, this.options.relayOnly !== false); } catch (error) { this.endCall(); throw error; }
+    try { config = privateIceConfig(servers.length ? servers : defaultIceServers, this.options.relayOnly !== false); } catch (error) { this.endCall(); throw error; }
 
     if (this.pc) return;
     this.hasRelay = !!config.iceServers?.some(server => [server.urls].flat().some(url => /^turns?:/.test(url)));

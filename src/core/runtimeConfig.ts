@@ -1,4 +1,4 @@
-interface RuntimeConfig { publicUrl?: string; vapidPublicKey?: string; iceServers?: RTCIceServer[]; }
+interface RuntimeConfig { publicUrl?: string; vapidPublicKey?: string; relayConfigured?: boolean; }
 let cached: Promise<RuntimeConfig> | null = null;
 let cachedAt = 0;
 export function runtimeConfig(): Promise<RuntimeConfig> {
