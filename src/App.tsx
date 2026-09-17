@@ -1118,7 +1118,7 @@ export const App: React.FC = () => {
                 <button className="btn btn-add" onClick={() => setIsAddContactModalOpen(true)} aria-label="Add Contact"><Plus size={19} /><span>Add contact</span></button>
               </div>
               <div className="search-input-wrapper"><Search size={18} /><input className="input-field" type="search" aria-label="Search contacts" placeholder="Search your people" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
-              <div className="directory-label"><span>ALL CONNECTIONS</span><span>Saved on this device</span></div>
+              <div className="directory-label"><span>ALL CONNECTIONS</span><span>{localStore.isTemporary() ? 'This session only' : 'Saved on this device'}</span></div>
               <div className="contacts-list" role="list" aria-label="Your contacts">
                 {filteredContacts.length === 0 && <div className="empty-search"><Search size={26} /><p>No one by that name.</p><span>Try another name or add a new connection.</span></div>}
                 {filteredContacts.map(contact => <div role="listitem" className={`contact-card ${contact.id === lineId ? 'active' : ''}`} key={contact.id}>
@@ -1130,7 +1130,7 @@ export const App: React.FC = () => {
                 </div>)}
               </div>
               {!savedLines.length && <div className="empty-search"><p>Your Phone Book is empty.</p><button className="btn btn-add" onClick={() => setIsAddContactModalOpen(true)}>Add a connection</button><button className="btn btn-secondary" onClick={() => { setVoiceOnly(false); setDeviceSettingsOpen(true); }}>Import a backup</button></div>}
-              <div className="directory-tip"><Lock size={15} /><span>Saved on this device.<br /><strong>No contact upload.</strong></span><button className="btn btn-quiet" aria-label="Data and backup" onClick={() => { setVoiceOnly(false); setDeviceSettingsOpen(true); }}><Download size={18} /></button></div>
+              <div className="directory-tip"><Lock size={15} /><span>{localStore.isTemporary() ? 'Forgotten after the call.' : 'Saved on this device.'}<br /><strong>No contact upload.</strong></span><button className="btn btn-quiet" aria-label="Data and backup" onClick={() => { setVoiceOnly(false); setDeviceSettingsOpen(true); }}><Download size={18} /></button></div>
             </section>
             {activeContact && <section className="conversation-panel" aria-label="Selected connection">
               <div className="conversation-top"><button className="btn btn-quiet mobile-back" onClick={() => setDetailOpen(false)}><ArrowLeft size={19} /> Phone Book</button><span><span className="status-dot" /> PRIVATE VOICE</span><button className="btn btn-quiet" title="Delete Contact" onClick={e => handleDeleteLine(activeContact.id, e)}><Trash2 size={17} /><span>Remove</span></button></div>
@@ -1147,12 +1147,12 @@ export const App: React.FC = () => {
                 <button className="btn btn-share" onClick={() => shareNative(activeContact)}><Share2 size={18} /> Share invite</button>
                 <button className="btn btn-secondary" title="Show QR Code" onClick={() => setIsQrOpen(true)}><QrCode size={18} /> QR code</button>
               </div>
-              <div className="permission-row"><Bell size={18} /><div><strong>{isPushEnabled ? 'Call alerts are on' : 'Don’t miss a hello.'}</strong><p>{isPushEnabled ? 'Temporary delivery routing · device limits apply' : 'Turn on optional background call alerts.'}</p></div><button className="btn btn-alert" disabled={pushBusy} onClick={isPushEnabled ? disablePush : handleEnablePush}>{pushBusy ? 'Enabling…' : isPushEnabled ? 'Turn off' : 'Enable'}</button></div>
+              <div className="permission-row"><Bell size={18} /><div><strong>{localStore.isTemporary() ? 'Keep this tab open' : isPushEnabled ? 'Call alerts are on' : 'Don’t miss a hello.'}</strong><p>{localStore.isTemporary() ? 'Background alerts are off in temporary sessions.' : isPushEnabled ? 'Temporary delivery routing · device limits apply' : 'Turn on optional background call alerts.'}</p></div><button className="btn btn-alert" disabled={pushBusy || localStore.isTemporary()} onClick={isPushEnabled ? disablePush : handleEnablePush}>{localStore.isTemporary() ? 'Session only' : pushBusy ? 'Enabling…' : isPushEnabled ? 'Turn off' : 'Enable'}</button></div>
             </section>}
           </div>
           {!micReady && <div className="mic-notice"><Mic size={17} /><span>Microphone access is required to make and answer calls.</span><button className="btn btn-secondary" onClick={() => setSetupOpen(true)}>Set up microphone</button></div>}
           {localStore.isUnavailable() && <p role="alert" className="mic-notice">Browser storage is unavailable. Contacts will be lost when you leave. Enable site storage to keep them.</p>}
-          <footer className="workspace-footer"><span><Lock size={13} /> Your contacts stay in this browser.</span><nav aria-label="Learn about ImiCall"><a href="/about.html">Why ImiCall</a><a href="/privacy.html">Privacy, explained</a><button onClick={() => setIsSettingsOpen(true)}>Settings</button></nav></footer>
+          <footer className="workspace-footer"><span><Lock size={13} /> {localStore.isTemporary() ? 'Contacts are kept in memory for this session.' : 'Your contacts stay in this browser.'}</span><nav aria-label="Learn about ImiCall"><a href="/about.html">Why ImiCall</a><a href="/privacy.html">Privacy, explained</a><button onClick={() => setIsSettingsOpen(true)}>Settings</button></nav></footer>
         </main>
       )}
 
