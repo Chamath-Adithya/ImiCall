@@ -1,6 +1,11 @@
 import { runtimeConfig } from './runtimeConfig';
 import { localStore } from './localStore';
 import { lineAuth, randomHex } from './privateLine';
+async function pushFetch(url: string, options: RequestInit) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try { return await fetch(url, { ...options, signal: controller.signal }); } finally { clearTimeout(timeout); }
+}
 const DEVICE_KEY = 'imicall_device_v2';
 export function deviceId() {
   let id = localStore.getItem(DEVICE_KEY);
@@ -14,6 +19,7 @@ export class PushNotificationManager {
     try { await navigator.serviceWorker.register('/sw.js'); this.registration = await navigator.serviceWorker.ready; return this.registration; } catch { return null; }
   }
   static async subscribeToLine(roomId: string, secret: string): Promise<boolean> {
+    if (localStore.isTemporary()) return false;
     if (!('PushManager' in window) || !('Notification' in window) || Notification.permission !== 'granted') return false;
     try {
       const reg = this.registration || await this.registerServiceWorker();
@@ -24,16 +30,19 @@ export class PushNotificationManager {
       let subscription = await reg.pushManager.getSubscription();
       if (subscription?.options.applicationServerKey && Array.from(new Uint8Array(subscription.options.applicationServerKey)).join() !== Array.from(key).join()) { await subscription.unsubscribe(); subscription = null; }
       subscription ||= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
-      return (await fetch('/api/push-subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await lineAuth(roomId, secret)}` }, body: JSON.stringify({ roomId, subscription, deviceId: deviceId() }) })).ok;
+      return (await pushFetch('/api/push-subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await lineAuth(roomId, secret)}` }, body: JSON.stringify({ roomId, subscription, deviceId: deviceId() }) })).ok;
     } catch { return false; }
   }
   static async unsubscribeFromLine(roomId: string, secret: string) {
-    try { await fetch('/api/push-unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await lineAuth(roomId, secret)}` }, body: JSON.stringify({ roomId, deviceId: deviceId() }) }); } catch { /* Memory entries expire within 24 hours. */ }
+    try { await pushFetch('/api/push-unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await lineAuth(roomId, secret)}` }, body: JSON.stringify({ roomId, deviceId: deviceId() }) }); } catch { /* Memory entries expire within 24 hours. */ }
   }
   static async disable(lines: { id: string; passcode: string }[]) {
     await Promise.all(lines.map(line => this.unsubscribeFromLine(line.id, line.passcode)));
-    const reg = this.registration || await this.registerServiceWorker();
-    const sub = await reg?.pushManager.getSubscription();
-    await sub?.unsubscribe();
+    try {
+      const reg = this.registration || await navigator.serviceWorker?.getRegistration();
+      const sub = await reg?.pushManager?.getSubscription();
+      await sub?.unsubscribe();
+    } catch { /* Local data removal must work even without push support. */ }
+    this.registration = null;
   }
 }

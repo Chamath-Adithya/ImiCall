@@ -20,13 +20,12 @@ export function tuneSdpForLowBandwidth(sdp: string, profileKey: SignalProfile = 
   }
 
   // Parameters to inject into fmtp line
-  // Note: RFC 7587 states cbr MUST NOT be combined with usedtx=1
   const opusParams: Record<string, string | number> = {
     maxaveragebitrate: profile.bitrate,
     stereo: 0,
     'sprop-stereo': 0,
-    useinbandfec: 1, // Forward Error Correction recovers dropped packets
-    usedtx: 1,       // Silence suppression saves cellular data
+    useinbandfec: profile.useFec ? 1 : 0, // Forward Error Correction recovers dropped packets
+    usedtx: profile.useDtx ? 1 : 0,       // Silence suppression saves cellular data
   };
 
   if (profile.id === 'extreme') {
@@ -57,7 +56,7 @@ export function tuneSdpForLowBandwidth(sdp: string, profileKey: SignalProfile = 
       continue;
     }
 
-    if (opusPayloadType && line.startsWith(`a=fmtp:${opusPayloadType}`)) {
+    if (opusPayloadType && line.startsWith(`a=fmtp:${opusPayloadType} `)) {
       fmtpFound = true;
       const spaceIdx = line.indexOf(' ');
       const prefix = line.substring(0, spaceIdx);

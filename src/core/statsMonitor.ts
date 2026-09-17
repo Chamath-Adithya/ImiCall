@@ -5,6 +5,8 @@ export class StatsMonitor {
   private intervalId: any = null;
   private lastBytesReceived: number = 0;
   private lastBytesSent: number = 0;
+  private lastLost = 0;
+  private lastReceived = 0;
   private lastTimestamp: number = 0;
   private onStatsCallback: ((stats: NetworkStats) => void) | null = null;
 
@@ -55,14 +57,12 @@ export class StatsMonitor {
         }
 
         // Candidate pair for RTT
-        if (stat.type === 'candidate-pair' && stat.state === 'succeeded') {
-          rtt = Math.round((stat.currentRoundTripTime || 0) * 1000); // ms
+        if (stat.type === 'candidate-pair' && stat.state === 'succeeded' && stat.nominated) {
+          rtt = Math.round((stat.currentRoundTripTime || 0) * 1000);
+          candidateType = report.get(stat.localCandidateId)?.candidateType || 'unknown'; // ms
         }
 
-        // Selected remote candidate
-        if (stat.type === 'remote-candidate') {
-          candidateType = stat.candidateType || candidateType;
-        }
+
       });
 
       // Calculate bitrates in kbps
@@ -78,8 +78,11 @@ export class StatsMonitor {
       this.lastTimestamp = now;
 
       // Calculate packet loss percentage
-      const totalPackets = packetsReceived + packetsLost;
-      const packetLossPct = totalPackets > 0 ? Math.min(100, Math.round((packetsLost / totalPackets) * 100)) : 0;
+      const lostNow = Math.max(0, packetsLost - this.lastLost);
+      const receivedNow = Math.max(0, packetsReceived - this.lastReceived);
+      this.lastLost = packetsLost; this.lastReceived = packetsReceived;
+      const totalPackets = receivedNow + lostNow;
+      const packetLossPct = totalPackets > 0 ? Math.min(100, Math.round((lostNow / totalPackets) * 100)) : 0;
 
       // Quality rating algorithm tailored for rural/low-signal WebRTC
       let qualityRating: NetworkStats['qualityRating'] = 'good';

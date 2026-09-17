@@ -1,9 +1,12 @@
-import { SignalProfile, NetworkStats, ChatMessage, CallState } from './types';
+import { SignalProfile, SIGNAL_PROFILES, NetworkStats, ChatMessage, CallState } from './types';
 import { tuneSdpForLowBandwidth } from './sdpTuner';
 import { PrivateSignaling, lineAuth } from './privateLine';
 import { StatsMonitor } from './statsMonitor';
 import { AudioManager } from './audioManager';
 import { SoundManager } from './soundManager';
+import { NATURAL, VoicePreset } from './voicePreset';
+import { microphoneError } from './permissions';
+import { privateIceConfig } from './transportPrivacy';
 import { runtimeConfig } from './runtimeConfig';
 import { deviceId } from './pushManager';
 
@@ -13,6 +16,7 @@ export interface WebRTCClientOptions {
   passcode: string; // Random 256-bit invitation secret
   profile: SignalProfile;
   iceServers?: RTCIceServer[];
+  relayOnly?: boolean;
 }
 
 export class WebRTCClient {
@@ -24,11 +28,14 @@ export class WebRTCClient {
   private closed = false;
   private retry = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private hasRelay = false;
   private ringTimer: ReturnType<typeof setTimeout> | null = null;
   private sendQueue = Promise.resolve();
   private receiveQueue = Promise.resolve();
   private candidates: RTCIceCandidateInit[] = [];
   private microphonePending = false;
+  private voicePreset: VoicePreset = NATURAL;
   private callGeneration = 0;
   private statsMonitor: StatsMonitor | null = null;
   public audioManager: AudioManager = new AudioManager();
@@ -54,6 +61,14 @@ export class WebRTCClient {
     this.options = options;
     this.secure = new PrivateSignaling(options.roomId);
     this.currentProfile = options.profile;
+  }
+
+  setRelayOnly(value: boolean) { if (!['idle','waiting','error','disconnected'].includes(this.state)) throw new Error('End the call before changing IP protection.'); this.options.relayOnly = value; }
+
+  private async checkRelay() {
+    if (this.options.relayOnly === false) return;
+    const runtime = await runtimeConfig();
+    privateIceConfig(this.options.iceServers || runtime.iceServers || [], true);
   }
 
   getState(): CallState {
@@ -198,8 +213,11 @@ export class WebRTCClient {
 
       case 'profile-change':
         if (msg.payload && ['balanced', 'extreme', 'hd'].includes(msg.payload.profile)) {
-          this.currentProfile = msg.payload.profile;
-          if (this.onProfileChange) this.onProfileChange(this.currentProfile);
+          const requested = msg.payload.profile as SignalProfile;
+          if (SIGNAL_PROFILES[requested].bitrate < SIGNAL_PROFILES[this.currentProfile].bitrate) {
+            this.currentProfile = requested; this.limitSenderBitrate();
+            this.onProfileChange?.(this.currentProfile);
+          }
         }
         break;
 
@@ -258,14 +276,18 @@ export class WebRTCClient {
     }
     const generation = this.callGeneration;
     this.microphonePending = true;
+    try { this.audioManager.prepareAudio(); await this.checkRelay(); } catch (error) { this.microphonePending = false; this.audioManager.cleanup(); this.onError?.(error instanceof Error ? error.message : 'IP protection unavailable. Call stopped.'); return false; }
+    if (generation !== this.callGeneration || this.closed) { this.microphonePending = false; this.audioManager.cleanup(); return false; }
     try {
       if (!this.audioManager.getLocalStream()) {
         await this.audioManager.initLocalAudio();
+        if (this.voicePreset.mix > 0) await this.audioManager.applyVoice(this.voicePreset, async () => {});
       }
     } catch (e: any) {
       this.microphonePending = false;
+      this.audioManager.cleanup();
       console.error('[WebRTC] Microphone init error:', e);
-      if (this.onError) this.onError('Microphone access is required to place a call.');
+      if (this.onError) this.onError(microphoneError(e));
       return false;
     }
 
@@ -280,20 +302,24 @@ export class WebRTCClient {
   }
 
   /**
-   * Callee accepts the incoming call by verifying PIN 2023.
+   * Callee accepts the incoming call using the saved invitation secret.
    */
   async acceptIncomingCall(enteredPin: string): Promise<boolean> {
     if (this.microphonePending || enteredPin !== this.options.passcode || this.state !== 'ringing-incoming' || this.ws?.readyState !== WebSocket.OPEN) return false;
     const generation = this.callGeneration;
     this.microphonePending = true;
+    try { this.audioManager.prepareAudio(); await this.checkRelay(); } catch (error) { this.microphonePending = false; this.audioManager.cleanup(); if (this.state === 'ringing-incoming') this.declineIncomingCall(); this.onError?.(error instanceof Error ? error.message : 'IP protection unavailable. Call stopped.'); return false; }
+    if (generation !== this.callGeneration || this.closed) { this.microphonePending = false; this.audioManager.cleanup(); return false; }
     try {
       if (!this.audioManager.getLocalStream()) {
         await this.audioManager.initLocalAudio();
+        if (this.voicePreset.mix > 0) await this.audioManager.applyVoice(this.voicePreset, async () => {});
       }
     } catch (e: any) {
       this.microphonePending = false;
+      this.audioManager.cleanup();
       console.error('[WebRTC] Microphone init error on answer:', e);
-      if (this.onError) this.onError('Microphone access is required to answer call.');
+      if (this.onError) this.onError(microphoneError(e));
       return false;
     }
 
@@ -338,20 +364,19 @@ export class WebRTCClient {
     ];
 
     const runtime = await runtimeConfig().catch(() => ({} as { iceServers?: RTCIceServer[] }));
-    const config: RTCConfiguration = {
-      iceServers: this.options.iceServers || runtime.iceServers || defaultIceServers,
-      iceCandidatePoolSize: 2,
-      bundlePolicy: 'max-bundle',
-      rtcpMuxPolicy: 'require',
-    };
+    let config: RTCConfiguration;
+    try { config = privateIceConfig(this.options.iceServers || runtime.iceServers || defaultIceServers, this.options.relayOnly !== false); } catch (error) { this.endCall(); throw error; }
 
     if (this.pc) return;
+    this.hasRelay = !!config.iceServers?.some(server => [server.urls].flat().some(url => /^turns?:/.test(url)));
     this.pc = new RTCPeerConnection(config);
+    this.connectTimer = setTimeout(() => { this.endCall(); this.onError?.('Call could not connect. Try another network; a TURN relay may be needed for this connection.'); }, 30000);
 
     // Attach clean local audio track
     if (!this.audioManager.getLocalStream()) {
       try {
         await this.audioManager.initLocalAudio();
+        if (this.voicePreset.mix > 0) await this.audioManager.applyVoice(this.voicePreset, async () => {});
       } catch {
         this.cleanupCallSession();
         this.setState('waiting');
@@ -378,11 +403,14 @@ export class WebRTCClient {
       if (!this.pc) return;
       switch (this.pc.connectionState) {
         case 'connected':
+          if (this.connectTimer) clearTimeout(this.connectTimer);
           this.setState('connected');
           this.startStatsMonitoring();
+          this.limitSenderBitrate();
           break;
         case 'disconnected':
         case 'failed':
+          this.onError?.(this.hasRelay ? 'Network connection lost. Reconnect and try again.' : 'This network could not connect directly. Try Wi-Fi; a TURN relay needs to be configured for restricted networks.');
           // If peer disconnected or left, tear down call and return cleanly to standby
           this.cleanupCallSession();
           this.setState('waiting');
@@ -491,11 +519,15 @@ export class WebRTCClient {
     if (this.onProfileChange) this.onProfileChange(profile);
 
     void this.sendSignal('profile-change', { profile });
+    this.limitSenderBitrate();
+  }
+
+  private limitSenderBitrate() {
     // Apply bitrate without replacing the live peer connection.
     for (const sender of this.pc?.getSenders() || []) {
       const parameters = sender.getParameters();
       if (parameters.encodings?.length) {
-        parameters.encodings[0].maxBitrate = { extreme: 10000, balanced: 18000, hd: 32000 }[profile];
+        parameters.encodings[0].maxBitrate = SIGNAL_PROFILES[this.currentProfile].bitrate;
         void sender.setParameters(parameters).catch(() => {});
       }
     }
@@ -503,6 +535,14 @@ export class WebRTCClient {
 
   private async flushCandidates() {
     for (const candidate of this.candidates.splice(0)) await this.pc?.addIceCandidate(candidate);
+  }
+
+  public async setVoicePreset(preset: VoicePreset) {
+    await this.audioManager.applyVoice(preset, async track => {
+      const sender = this.pc?.getSenders().find(s => s.track?.kind === 'audio');
+      if (sender) await sender.replaceTrack(track);
+    });
+    this.voicePreset = preset;
   }
 
   public getCurrentProfile(): SignalProfile {
@@ -534,7 +574,10 @@ export class WebRTCClient {
   private startStatsMonitoring() {
     if (!this.pc) return;
     this.statsMonitor = new StatsMonitor(this.pc);
+    let poorSamples = 0;
     this.statsMonitor.start(1000, (stats) => {
+      poorSamples = ['poor','critical'].includes(stats.qualityRating) ? poorSamples + 1 : 0;
+      if (poorSamples >= 3 && this.currentProfile !== 'extreme') { this.setProfile('extreme'); poorSamples = 0; }
       if (this.onStatsUpdate) {
         this.onStatsUpdate(stats);
       }
@@ -553,6 +596,8 @@ export class WebRTCClient {
    */
   public cleanupCallSession() {
     this.callGeneration++;
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = null;
     this.clearRingTimeout();
     this.candidates = [];
     this.stopStatsMonitoring();

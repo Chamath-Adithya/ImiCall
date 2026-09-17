@@ -19,6 +19,7 @@ export const CameraQrScanner: React.FC<CameraQrScannerProps> = ({ isOpen, onClos
     }
 
     let intervalId: any = null;
+    let cancelled = false;
 
     async function startCamera() {
       setErrorText(null);
@@ -27,11 +28,13 @@ export const CameraQrScanner: React.FC<CameraQrScannerProps> = ({ isOpen, onClos
           throw new Error('Camera access is not supported by your browser.');
         }
 
+        if (!('BarcodeDetector' in window)) throw new Error('This browser cannot scan inside the app. Use your phone’s Camera app to scan the QR, or paste the invite link.');
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: 'environment' } },
           audio: false,
         });
 
+        if (cancelled) { stream.getTracks().forEach(track => track.stop()); return; }
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -65,6 +68,7 @@ export const CameraQrScanner: React.FC<CameraQrScannerProps> = ({ isOpen, onClos
     startCamera();
 
     return () => {
+      cancelled = true;
       if (intervalId) clearInterval(intervalId);
       stopCamera();
     };

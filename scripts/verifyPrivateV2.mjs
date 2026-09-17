@@ -9,7 +9,10 @@ try {
  await contextA.overridePermissions(base,['microphone']); await contextB.overridePermissions(base,['microphone']);
  const a=await contextA.newPage(),b=await contextB.newPage();
  for (const page of [a,b]) await page.evaluateOnNewDocument(() => {
-   window.__pcs=[];window.__streams=[];
+   localStorage.setItem('imicall_transport','direct');
+   window.__pcs=[];window.__streams=[];window.__worklets=[];
+   const Worklet=window.AudioWorkletNode;
+   window.AudioWorkletNode=new Proxy(Worklet,{construct(target,args){const node=new target(...args);window.__worklets.push(node);return node;}});
    const PC=window.RTCPeerConnection;
    window.RTCPeerConnection=new Proxy(PC,{construct(target,args){const pc=new target(...args);window.__pcs.push(pc);return pc;}});
    const gum=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
@@ -28,7 +31,24 @@ try {
  await b.waitForFunction(()=>document.body.innerText.includes('Incoming Call...'));
  await b.evaluate(()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Answer').click());
  await Promise.all([a,b].map(p=>p.waitForFunction(()=>document.body.innerText.includes('Call Active'),{timeout:20000})));
- console.log('Two browsers connected with private v2 invites.');
+ console.log('Two browsers connected with private v2 invites (explicit direct mode for local testing).');
+ await a.select('[aria-label="Connection quality"]','extreme');
+ await a.waitForFunction(()=>window.__pcs[0].getSenders().find(s=>s.track?.kind==='audio').getParameters().encodings[0].maxBitrate===10000);
+ console.log('Low-bandwidth profile enforces a 10 kbps outgoing encoder limit.');
+ const beforeTrack=await a.evaluate(()=>window.__pcs[0].getSenders().find(s=>s.track?.kind==='audio').track.id);
+ await a.click('[title="Voice effects"]');await a.waitForSelector('.voice-panel');
+ await a.evaluate(()=>Array.from(document.querySelectorAll('.voice-panel button')).find(b=>b.textContent==='Robot').click());
+ await a.evaluate(()=>Array.from(document.querySelectorAll('.voice-panel button')).find(b=>b.textContent==='Apply effect').click());
+ await a.waitForFunction(()=>document.querySelector('.voice-panel')?.textContent.includes('Current: Robot'));
+ const afterTrack=await a.evaluate(()=>window.__pcs[0].getSenders().find(s=>s.track?.kind==='audio').track.id);assert.notEqual(afterTrack,beforeTrack);
+ await a.evaluate(()=>window.__worklets[0].dispatchEvent(new Event('processorerror')));
+ await a.waitForFunction(()=>document.body.innerText.includes('Voice effect failed'),{timeout:5000}).catch(async error=>{console.log('Filter failure diagnostics',await a.evaluate(()=>({text:document.body.innerText,handler:typeof window.__worklets[0].onprocessorerror,enabled:window.__streams.map(s=>s.getTracks().map(t=>t.enabled))})),errors);throw error;});
+ assert.equal(await a.evaluate(()=>window.__streams.every(s=>s.getAudioTracks().every(t=>!t.enabled))),true,'Effect crash must mute original microphone');
+ console.log('Simulated voice processor failure muted the microphone without natural-voice fallback.');
+ await a.evaluate(()=>Array.from(document.querySelectorAll('.voice-panel button')).find(b=>b.textContent==='Use natural voice').click());
+ await a.waitForFunction(()=>document.querySelector('.voice-panel')?.textContent.includes('Current: Natural'));
+ assert.equal(await a.evaluate(()=>window.__pcs[0].getSenders().find(s=>s.track?.kind==='audio').track.id),beforeTrack);
+ await a.click('[aria-label="Close settings"]');console.log('Robot filter replaced the outgoing track during the call; Natural restored the original track.');
  await new Promise(r=>setTimeout(r,1500));
  const bytes=await b.evaluate(async()=>{let n=0;for(const pc of window.__pcs){const stats=await pc.getStats();stats.forEach(s=>{if(s.type==='inbound-rtp')n+=s.bytesReceived||0;});}return n;});assert.ok(bytes>0,'Received actual media packets');
  await a.click('[title="End Call"]');

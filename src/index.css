@@ -319,3 +319,101 @@ body { background: #111; }
  .mic-notice .btn { width: 100%; }
 }
 .contacts-list .contact-card { content-visibility: auto; contain-intrinsic-size: auto 70px; }
+/* Phone navigation is a separate one-pane flow; tablets retain two usable panes. */
+.mobile-back { display: none; }
+.app-notice { display: flex; gap: 12px; justify-content: space-between; align-items: center; padding: 12px 16px; background: #302c21; border-radius: 12px; font-size: 12px; color: #e6d4ad; margin-bottom: 12px; }
+.directory-tip .btn { margin-left: auto; }
+.device-settings { max-width: 560px; }
+.device-settings h2 { font-size: 22px; font-weight: 550; }
+.device-settings h3 { margin: 24px 0 12px; font-size: 18px; font-weight: 550; }
+.settings-copy { color: #aaa; font-size: 12px; line-height: 1.65; margin: 12px 0 20px; }
+.settings-tabs,.settings-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.settings-tabs .btn { flex: 1; }
+.file-button { position: relative; overflow: hidden; }
+.file-button input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.preset-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 8px; margin-bottom: 20px; }
+.preset-grid .chosen { background: #294535; color: #a3efc7; }
+.range-label { display: flex; justify-content: space-between; flex-wrap: wrap; font-size: 12px; color: #aaa; gap: 8px; margin: 18px 0; }
+.range-label strong { color: #ddd; font-weight: 500; }
+.range-label input { width: 100%; accent-color: #72daa7; height: 30px; }
+.backup-preview { padding: 16px; background: #303030; border-radius: 12px; }
+.call-screen { max-width: 700px; margin: auto; width: 100%; min-height: min(750px,calc(100dvh - 130px)); display: flex; flex-direction: column; padding: 16px; }
+.call-screen-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.call-screen-header > span { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #acd8bd; }
+.call-person { flex: 1; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 0; }
+.call-person h2 { font-size: 30px; font-weight: 500; overflow-wrap: anywhere; max-width: 100%; }
+.call-person time { display: block; color: #aaa; font: 18px var(--font-mono); margin-top: 12px; }
+.local-meter { display: flex; align-items: center; gap: 12px; margin-top: 16px; color: #aaa; font-size: 11px; }
+.call-options { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; }
+.call-options label { font-size: 11px; color: #aaa; }
+.call-options select { display: block; color: #eee; background: #292929; border: 0; border-radius: 10px; padding: 12px; font-size: 14px; max-width: 100%; }
+.call-quality { text-align: center; font-size: 10px; color: #999; margin: 18px 0; }
+.call-controls { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; position: sticky; bottom: 0; background: #111; padding: 16px 0 calc(16px + env(safe-area-inset-bottom)); }
+.call-controls .btn { flex-direction: column; gap: 8px; min-height: 76px; font-size: 11px; border-radius: 18px; }
+@media (min-width: 701px) and (max-width: 1100px) {
+ .app-container { padding: 20px; }
+ .workspace-grid { grid-template-columns: minmax(270px,.85fr) minmax(0,1fr); min-height: min(730px,calc(100dvh - 160px)); }
+ .phonebook-panel { padding: 20px 14px !important; }
+ .phonebook-header h2 { font-size: 24px; }
+ .phonebook-header .btn-add span { display: none; }
+ .contacts-list { max-height: calc(100dvh - 360px); min-height: 200px; }
+ .conversation-panel { padding: 20px; }
+ .permission-row { flex-wrap: wrap; }
+ .permission-row .btn { margin-left: auto; }
+ .conversation-center h2 { font-size: 26px; }
+}
+@media (max-width: 700px) {
+ .app-container { padding: calc(12px + env(safe-area-inset-top)) 12px 0; }
+ .app-header { padding-bottom: 14px; }
+ .brand-title { font-size: 21px; }
+ .brand-tagline { font-size: 10px; }
+ .workspace-grid { display: block; min-height: calc(100dvh - 158px); background: #202020; border-radius: 16px; }
+ .phonebook-panel { min-height: calc(100dvh - 158px); padding: 24px 14px 16px !important; }
+ .phonebook-header { margin-bottom: 20px; }
+ .phonebook-header h2 { font-size: 29px; }
+ .contacts-list { max-height: calc(100dvh - 366px); min-height: 140px; flex: 1; }
+ .contact-card { min-height: 74px; }
+ .contact-select { min-height: 56px; }
+ .contact-call { min-height: 48px; min-width: 48px; }
+ .show-directory .conversation-panel { display: none; }
+ .show-conversation .phonebook-panel { display: none; }
+ .show-conversation .conversation-panel { display: flex; min-height: calc(100dvh - 158px); padding: 14px 18px 22px; }
+ .mobile-back { display: inline-flex; font-size: 12px; color: #ddd; padding-left: 0; }
+ .conversation-top > span { display: none; }
+ .conversation-center { min-height: 260px; padding: 24px 0; }
+ .conversation-center .hero-avatar { width: 88px; height: 88px; font-size: 32px; }
+ .conversation-center h2 { font-size: 28px; }
+ .main-call { min-height: 54px; }
+ .directory-tip { margin-top: auto; }
+ .workspace-footer { padding: 14px 4px; font-size: 10px; }
+ .workspace-footer > span { display: none; }
+ .workspace-footer nav { justify-content: space-between; width: 100%; gap: 8px; }
+ .permission-row p { font-size: 11px; }
+ .modal-card { max-height: 92dvh; }
+ .device-settings { padding-bottom: calc(24px + env(safe-area-inset-bottom)) !important; }
+ .settings-actions > .btn { flex: 1 1 130px; }
+ .in-call .app-header { display: none; }
+ .call-screen { padding: 6px 4px 0; min-height: calc(100dvh - 26px - env(safe-area-inset-top)); }
+ .call-person { padding: 24px 0; }
+ .call-person h2 { font-size: 28px; }
+ .call-person .hero-avatar { width: 90px; height: 90px; }
+ .call-controls { gap: 8px; }
+ .call-controls .btn { min-height: 72px; padding: 10px 6px; font-size: 10px; }
+ .call-options { gap: 8px; }
+ .call-options .btn { font-size: 12px; }
+}
+@media (max-height: 550px) and (orientation: landscape) {
+ .in-call .app-header { display: none; }
+ .call-screen { min-height: calc(100dvh - 24px); padding: 0; }
+ .call-person { padding: 8px; }
+ .call-person .hero-avatar { display: none; }
+ .call-person h2 { font-size: 22px; }
+ .call-person time { margin: 4px; }
+ .local-meter { margin-top: 4px; }
+ .call-controls { padding: 8px 0; }
+ .call-controls .btn { min-height: 56px; flex-direction: row; }
+ .call-quality { margin: 8px; }
+ .contacts-list { max-height: 240px; }
+}
+.transfer-list{max-height:200px;overflow:auto;margin:12px 0;overscroll-behavior:contain}.transfer-item{display:flex;align-items:center;gap:12px;padding:12px 8px;min-height:48px}.transfer-item input{width:18px;height:18px;accent-color:var(--accent,#73dbaa);flex-shrink:0}.transfer-item span{overflow-wrap:anywhere}.transfer-item small{display:block;opacity:.65;margin-top:4px}.transfer-guide{margin:20px 0;font-size:13px;line-height:1.65;color:#bbb}.transfer-guide summary{cursor:pointer;color:#eee;padding:10px 0}.transfer-guide ol{padding-left:22px}
+.privacy-strip{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:11px;color:#a9b4ae;padding:8px 0 14px;flex-wrap:wrap}.privacy-settings{margin-bottom:20px}.privacy-settings select{width:100%}

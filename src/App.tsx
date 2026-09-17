@@ -1,3 +1,4 @@
+import { OptionalFeatureBoundary } from './components/OptionalFeatureBoundary';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Phone,
@@ -11,7 +12,6 @@ import {
   Copy,
   Check,
   Lock,
-  Volume2,
   BellRing,
   Settings,
   RefreshCw,
@@ -23,13 +23,19 @@ import {
   UserCheck,
   Camera,
   Clipboard,
+  ArrowLeft,
+  SlidersHorizontal,
+  Download,
 } from 'lucide-react';
 import { SignalProfile, NetworkStats, ChatMessage, CallState, SIGNAL_PROFILES } from './core/types';
 import { newLineId, newLineSecret, isSecureLine } from './core/privateLine';
+import { NATURAL, VoicePreset } from './core/voicePreset';
+import { microphoneError } from './core/permissions';
 import { useModalFocus } from './core/modalFocus';
 import { runtimeConfig } from './core/runtimeConfig';
 import { localStore } from './core/localStore';
 import { WebRTCClient } from './core/webrtcClient';
+import { requestCallAlertPermission } from './core/notificationPermission';
 import { PushNotificationManager } from './core/pushManager';
 import { AudioWaveform } from './components/AudioWaveform';
 
@@ -45,6 +51,8 @@ const ChatDrawer = React.lazy(() =>
 const CameraQrScanner = React.lazy(() =>
   import('./components/CameraQrScanner').then((m) => ({ default: m.CameraQrScanner }))
 );
+
+const DeviceSettings = React.lazy(() => import('./components/DeviceSettings').then(m => ({ default: m.DeviceSettings })));
 
 export interface SavedLine {
   id: string;
@@ -64,8 +72,18 @@ const generateRandomLineId = newLineId;
 export const App: React.FC = () => {
   useModalFocus();
   // Phone Book & Line State
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [deviceSettingsOpen, setDeviceSettingsOpen] = useState(false);
+  const [voiceOnly, setVoiceOnly] = useState(false);
+  const [voicePreset, setVoicePreset] = useState<VoicePreset>(NATURAL);
+  const voiceRef = useRef<VoicePreset>(NATURAL);
+  const [playbackBlocked, setPlaybackBlocked] = useState(false);
+  const [offline, setOffline] = useState(!navigator.onLine);
+  const [appUpdate, setAppUpdate] = useState<ServiceWorker | null>(null);
   const [micReady, setMicReady] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [relayOnly, setRelayOnly] = useState(localStore.getItem('imicall_transport') !== 'direct');
+  const [pushBusy, setPushBusy] = useState(false);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [permissionError, setPermissionError] = useState('');
   const [onlineLines, setOnlineLines] = useState<Record<string, boolean>>({});
@@ -85,10 +103,8 @@ export const App: React.FC = () => {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [networkStats, setNetworkStats] = useState<NetworkStats | null>(null);
   const [localVolume, setLocalVolume] = useState<number>(0);
-  const [remoteVolume, setRemoteVolume] = useState<number>(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [hasUnreadChat, setHasUnreadChat] = useState<boolean>(false);
-  const [boostLevel, setBoostLevel] = useState<number>(1.0);
 
   // Modals & Phone Book Management
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
@@ -137,7 +153,19 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    void PushNotificationManager.registerServiceWorker();
+    void PushNotificationManager.registerServiceWorker().then(reg => {
+      if (!reg) return;
+      if (reg.waiting) setAppUpdate(reg.waiting);
+      const connection = (navigator as any).connection;
+      if (navigator.onLine && !connection?.saveData && !['slow-2g', '2g'].includes(connection?.effectiveType)) {
+        setTimeout(() => reg.active?.postMessage({ type: 'CACHE_OPTIONAL' }), 8000);
+      }
+      reg.addEventListener('updatefound', () => {
+        const worker = reg.installing;
+        worker?.addEventListener('statechange', () => { if (worker.state === 'installed' && navigator.serviceWorker.controller) setAppUpdate(worker); });
+      });
+    });
+    if (!window.isSecureContext) { setPermissionError(microphoneError()); setSetupOpen(true); }
     navigator.permissions?.query({ name: 'microphone' as PermissionName }).then(status => {
       if (cancelled) return;
       setMicReady(status.state === 'granted');
@@ -153,10 +181,11 @@ export const App: React.FC = () => {
       const stored = JSON.parse(localStore.getItem(STORAGE_LINES_KEY) || '[]');
       if (Array.isArray(stored)) list = stored.filter(l => typeof l?.id === 'string' && /^[a-zA-Z0-9_-]{3,80}$/.test(l.id) && typeof l.name === 'string' && typeof l.passcode === 'string').slice(0, 100).map(l => ({ ...l, name: l.name.slice(0, 80) }));
     } catch { setErrorMessage('Saved contacts could not be read. Your browser may have cleared its storage.'); }
+    if (localStore.isTemporary()) history.replaceState(null, '', location.pathname + location.hash);
     const hash = new URLSearchParams(location.hash.slice(1));
     const inviteId = hash.get('connect') || hash.get('line');
     const secret = hash.get('pin') || '';
-    if (location.search) {
+    if (location.search && !localStore.isTemporary()) {
       setErrorMessage('For privacy, invites must use the complete link with a # fragment. Ask your contact for a new link.');
       history.replaceState(null, '', location.pathname + location.hash);
     }
@@ -198,7 +227,7 @@ export const App: React.FC = () => {
       stream.getTracks().forEach(track => track.stop());
       setMicReady(true); setSetupOpen(false);
     } catch (error) {
-      setPermissionError(error instanceof Error && error.name === 'NotAllowedError' ? 'Microphone access is required to make and answer calls. Open this site’s browser permissions, allow Microphone, then try again.' : 'Microphone unavailable. Connect a microphone and allow access in browser settings. HTTPS is required.');
+      setPermissionError(microphoneError(error));
       setMicReady(false);
     } finally { setPermissionBusy(false); }
   };
@@ -209,7 +238,6 @@ export const App: React.FC = () => {
       volumeIntervalRef.current = setInterval(() => {
         if (clientRef.current && !document.hidden) {
           setLocalVolume(clientRef.current.audioManager.getLocalVolume());
-          setRemoteVolume(clientRef.current.audioManager.getRemoteVolume());
         }
       }, 80);
     } else {
@@ -218,7 +246,6 @@ export const App: React.FC = () => {
         volumeIntervalRef.current = null;
       }
       setLocalVolume(0);
-      setRemoteVolume(0);
     }
 
     return () => {
@@ -254,9 +281,19 @@ export const App: React.FC = () => {
     const existing = clientsRef.current.get(line.id);
     if (existing) return existing;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const client = new WebRTCClient({ signalingUrl: `${protocol}//${location.host}/ws`, roomId: line.id, passcode: line.passcode, profile: selectedProfile });
+    const client = new WebRTCClient({ signalingUrl: `${protocol}//${location.host}/ws`, roomId: line.id, passcode: line.passcode, profile: selectedProfile, relayOnly: localStore.getItem('imicall_transport') !== 'direct' });
     clientsRef.current.set(line.id, client);
+    void client.setVoicePreset(voiceRef.current);
+    client.audioManager.onPlaybackBlocked = () => setPlaybackBlocked(true);
+    client.audioManager.onFilterFailure = () => { setIsMuted(true); setErrorMessage('Voice effect failed. Microphone stays muted. Choose Natural or reapply an effect to recover.'); };
+    let sessionHadCall = false;
     client.onStateChange = state => {
+      if (state === 'connected') sessionHadCall = true;
+      if (localStore.isTemporary() && sessionHadCall && ['waiting','disconnected','error'].includes(state)) {
+        sessionHadCall = false;
+        clientsRef.current.forEach(c=>c.close()); localStore.clearImiCall();
+        location.replace('/?temporary=1'); return;
+      }
       if (state === 'ringing-incoming' && clientRef.current !== client) {
         if (clientRef.current && !['waiting', 'idle', 'error'].includes(clientRef.current.getState())) { client.declineIncomingCall(); return; }
         clientRef.current = client; setLineId(line.id); setPasscode(line.passcode);
@@ -264,7 +301,7 @@ export const App: React.FC = () => {
       }
       if (clientRef.current === client) {
         setCallState(['idle', 'disconnected', 'error'].includes(state) ? 'waiting' : state);
-        if (state === 'waiting') { setNetworkStats(null); setChatMessages([]); setIsMuted(false); }
+        if (state === 'waiting') { setPlaybackBlocked(false); setNetworkStats(null); setChatMessages([]); setIsMuted(false); }
       }
       if (state === 'waiting' && localStore.getItem('imicall_push_optin') === 'yes') {
         void PushNotificationManager.subscribeToLine(line.id, line.passcode).then(ok => { if (clientRef.current === client) setIsPushEnabled(ok); });
@@ -290,6 +327,7 @@ export const App: React.FC = () => {
     setCallState(client.getState() === 'idle' ? 'waiting' : client.getState());
   };
   const handleSwitchLine = (line: SavedLine) => {
+    setDetailOpen(true);
     setLineId(line.id); setPasscode(line.passcode);
     localStore.setItem(ACTIVE_LINE_ID_KEY, line.id);
     void connectSavedLine(line.id, line.passcode);
@@ -449,7 +487,7 @@ export const App: React.FC = () => {
 
   const handleDeleteLine = (idToDelete: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!window.confirm("Remove this contact from your browser? Keep their invite if you want to reconnect later.")) return;
+    if (!window.confirm("Remove this contact from this browser only? The other person and any backups keep access. You can restore the same connection from its backup or private invite.")) return;
 
     const removed = savedLines.find(line => line.id === idToDelete);
     if (removed) void PushNotificationManager.unsubscribeFromLine(removed.id, removed.passcode);
@@ -504,7 +542,7 @@ export const App: React.FC = () => {
   };
 
   const handleCopyActiveInvite = async () => {
-    const activeContact = savedLines.find((l) => l.id === lineId);
+  const activeContact = savedLines.find((l) => l.id === lineId);
     if (!activeContact) return;
     try { await navigator.clipboard.writeText(getContactInviteUrl(activeContact)); } catch { setErrorMessage('Copy failed. Use the QR code or allow clipboard access.'); return; }
     setCopiedLink(true);
@@ -588,14 +626,6 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleBoostChange = (multiplier: number) => {
-    setBoostLevel(multiplier);
-    if (clientRef.current) {
-      clientRef.current.audioManager.setBoostLevel(multiplier);
-      clientRef.current.audioManager.resumeAudio();
-    }
-  };
-
   const handleSendMessage = (text: string) => {
     if (!clientRef.current) return;
     const msg = clientRef.current.sendChatMessage(text);
@@ -611,13 +641,24 @@ export const App: React.FC = () => {
   };
 
   const handleEnablePush = async () => {
-    if (!('Notification' in window) || !('PushManager' in window)) { setErrorMessage('Notifications are unavailable here. On iPhone, add ImiCall to your Home Screen and open it there.'); return; }
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') { setErrorMessage('Notifications are off. Allow them in browser settings to receive background alerts.'); return; }
-    localStore.setItem('imicall_push_optin', 'yes');
-    const results = await Promise.all(savedLines.filter(l => isSecureLine(l.id, l.passcode)).map(l => PushNotificationManager.subscribeToLine(l.id, l.passcode)));
-    setIsPushEnabled(results.length > 0 && results.every(Boolean));
-    showToast(results.every(Boolean) ? 'Call alerts enabled. Delivery depends on your browser and device.' : 'Some alerts could not be enabled. Reconnect, then try again.');
+    if (localStore.isTemporary()) { setErrorMessage('Background alerts are disabled in a temporary session. Keep this tab open to receive calls.'); return; }
+    if (pushBusy) return;
+    setErrorMessage(null);
+    setPushBusy(true);
+    try {
+      // Keep the browser request in the original click's user activation.
+      const permission = await requestCallAlertPermission();
+      if (permission === 'default') { setErrorMessage('No choice was made. Click Enable again and choose Allow in your browser’s notification prompt. Check the address bar if the request is collapsed.'); return; }
+      if (permission === 'denied') { setErrorMessage('Notifications were blocked. Change this site’s Notifications setting to Allow, then click Enable again.'); return; }
+      if (!('PushManager' in window)) { setErrorMessage('Notification permission is allowed, but background push is unavailable in this browser. Try your regular browser or the installed Home Screen app.'); return; }
+      localStore.setItem('imicall_push_optin', 'yes');
+      const results = await Promise.all(savedLines.filter(l => isSecureLine(l.id, l.passcode)).map(l => PushNotificationManager.subscribeToLine(l.id, l.passcode)));
+      const enabled = results.length > 0 && results.every(Boolean);
+      setIsPushEnabled(enabled);
+      showToast(enabled ? 'Call alerts enabled. Delivery depends on your browser and device.' : 'Permission allowed, but call alerts could not connect. Check your connection and try Enable again.');
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'The browser could not open the permission prompt. Open ImiCall in your regular browser and try Enable again.');
+    } finally { setPushBusy(false); }
   };
   useEffect(() => {
     const renew = setInterval(() => {
@@ -634,6 +675,47 @@ export const App: React.FC = () => {
     const upgraded = { ...activeContact, id: newLineId(), passcode: newLineSecret(), createdAt: Date.now() };
     saveLinesList(savedLines.map(l => l.id === activeContact.id ? upgraded : l), upgraded.id);
     handleSwitchLine(upgraded); setShareContact(upgraded);
+  };
+
+  const applyVoice = async (preset: VoicePreset) => {
+    // Only publish the selected state after the track switch succeeds.
+    if (clientRef.current) await clientRef.current.setVoicePreset(preset);
+    for (const client of clientsRef.current.values()) if (client !== clientRef.current) await client.setVoicePreset(preset);
+    voiceRef.current = preset; setVoicePreset(preset);
+    setIsMuted(clientRef.current?.audioManager.getIsMuted() || false);
+  };
+  const importLines = (imported: SavedLine[]) => {
+    const merged = new Map(savedLines.map(line => [line.id, line]));
+    for (const line of imported) {
+      const existing = merged.get(line.id);
+      if (existing && existing.passcode !== line.passcode) throw new Error('Conflicting invitation secret. Your existing contacts were kept.');
+      if (!existing) merged.set(line.id, line);
+    }
+    if (merged.size > 100) throw new Error('Import would exceed 100 contacts. No changes made.');
+    const list = Array.from(merged.values());
+    saveLinesList(list, lineId || list[0]?.id || '');
+    if (!lineId && list[0]) { setLineId(list[0].id); setPasscode(list[0].passcode); }
+    setHasSavedLine(true);
+  };
+  const clearDevice = async () => {
+    localStore.removeItem('imicall_push_optin');
+    await PushNotificationManager.disable(savedLines);
+    clientsRef.current.forEach(c => c.close()); clientsRef.current.clear(); clientRef.current = null;
+    localStore.clearImiCall();
+    if ('caches' in window) await Promise.all((await caches.keys()).filter(key => key.startsWith('imicall-')).map(key => caches.delete(key)));
+    if ('serviceWorker' in navigator) for (const reg of await navigator.serviceWorker.getRegistrations()) if (reg.scope === location.origin + '/') await reg.unregister();
+    linesRef.current = []; setSavedLines([]); setLineId(''); setPasscode(''); setMyDisplayName(''); setIsPushEnabled(false); setDetailOpen(false); setCallState('waiting'); setHasSavedLine(true); setVoicePreset(NATURAL); voiceRef.current = NATURAL; setChatMessages([]); setAppUpdate(null);
+    showToast('ImiCall data and cached app removed from this browser.');
+  };
+  useEffect(() => {
+    const update = () => setOffline(!navigator.onLine);
+    addEventListener('online', update); addEventListener('offline', update);
+    return () => { removeEventListener('online', update); removeEventListener('offline', update); };
+  }, []);
+  const shareNative = async (contact: SavedLine) => {
+    const url = getContactInviteUrl(contact);
+    if (navigator.share) { try { await navigator.share({ title: 'Your private ImiCall invitation', url }); } catch (error) { if (!(error instanceof Error && error.name === 'AbortError')) setShareContact(contact); } }
+    else setShareContact(contact);
   };
 
   const activeContact = savedLines.find((l) => l.id === lineId) || savedLines[0];
@@ -687,6 +769,7 @@ export const App: React.FC = () => {
         <small>Calls stay unavailable until microphone access is allowed. Notifications are optional and can be enabled separately.</small>
       </section></div>}
 
+      <div className="privacy-strip"><span>{relayOnly ? 'IP protection · relay required' : 'Direct calls · peer may see your IP'}{localStore.isTemporary() ? ' · Temporary session · forget after call' : ''}</span>{localStore.isTemporary() && <button className="btn btn-quiet" onClick={() => { clientsRef.current.forEach(c=>c.close()); localStore.clearImiCall(); location.replace('/?temporary=1'); }}>End & forget session</button>}</div>
       {/* Error Banner */}
       {errorMessage && (
         <div
@@ -735,7 +818,10 @@ export const App: React.FC = () => {
               Names and invite secrets are saved only in this browser. Anyone using this browser profile can access them. Clearing site data removes your contacts.
             </p>
 
+            <div className="privacy-settings"><label className="input-label">Call connection<select className="input-field" aria-label="Call privacy" disabled={!['waiting','idle','error','disconnected'].includes(callState)} value={relayOnly?'relay':'direct'} onChange={e=>{const strict=e.target.value==='relay';if(!strict&&!window.confirm('Direct calls can reveal your IP address to the other participant. Continue without relay-only IP protection?'))return;try{clientsRef.current.forEach(c=>c.setRelayOnly(strict));localStore.setItem('imicall_transport',strict?'relay':'direct');setRelayOnly(strict);}catch(error){setErrorMessage(String(error));}}}><option value="relay">Protect my IP · relay only</option><option value="direct">Direct calls · exposes IP to peer</option></select></label><p className="settings-copy">IP protection never falls back to a direct connection. It needs an operator-configured TURN relay. The relay and service still see network metadata.</p><a className="btn btn-secondary btn-full" href="/?temporary=1" target="_blank" rel="noopener noreferrer">Open temporary session</a><p className="settings-copy">Temporary sessions keep contacts and presets in memory only, disable push alerts and forget them after a connected call ends or on reload. Your saved Phone Book stays in this tab. Browser history, downloads, clipboard, screenshots and the other person’s device are not erased.</p></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <button className="btn btn-secondary btn-full" onClick={() => { setIsSettingsOpen(false); setVoiceOnly(false); setDeviceSettingsOpen(true); }}><Download size={16} /> Export, import & clear data</button>
+              <button className="btn btn-secondary btn-full" onClick={() => { setIsSettingsOpen(false); setVoiceOnly(true); setDeviceSettingsOpen(true); }}><SlidersHorizontal size={16} /> Voice effects & presets</button>
               <button className="btn btn-secondary btn-full" onClick={() => { setIsSettingsOpen(false); setSetupOpen(true); }}><Mic size={16} /> Microphone permissions</button>
               {isPushEnabled && <button className="btn btn-secondary btn-full" onClick={disablePush}><Bell size={16} /> Disable background alerts</button>}
               <a className="btn btn-secondary btn-full" href="/privacy.html">Read privacy & storage details</a>
@@ -1022,7 +1108,9 @@ export const App: React.FC = () => {
 
       {/* VIEW B: PERMANENT PHONE BOOK & SPEED-DIAL HOTLINE */}
       {hasSavedLine && (callState === 'waiting' || callState === 'idle') && (
-        <main className="workspace">
+        <main className={`workspace ${detailOpen ? 'show-conversation' : 'show-directory'}`}>
+          {offline && <div className="app-notice" role="status">Offline · Your saved phone book is available. Reconnect to place calls.</div>}
+          {appUpdate && <div className="app-notice">A new app version is ready.<button className="btn btn-secondary" onClick={() => { navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true }); appUpdate.postMessage({ type: 'ACTIVATE_UPDATE' }); }}>Update now</button></div>}
           <div className="workspace-grid">
             <section className="phonebook-panel" aria-labelledby="phonebook-title">
               <div className="phonebook-header">
@@ -1038,27 +1126,28 @@ export const App: React.FC = () => {
                     <span className="contact-avatar">{contact.name.charAt(0).toUpperCase()}</span>
                     <span className="contact-details"><span className="contact-name">{contact.name}</span><span className="contact-substatus"><span className={`status-dot ${onlineLines[contact.id] ? '' : 'offline'}`} />{!isSecureLine(contact.id, contact.passcode) ? 'Upgrade connection' : onlineLines[contact.id] ? 'Available to call' : 'Offline · invite to connect'}</span></span>
                   </button>
-                  <button className="btn contact-call" title={`Call ${contact.name}`} aria-label={`Call ${contact.name}`} onClick={e => handleCallSavedLine(contact, e)}><Phone size={18} /></button>
+                  <button className="btn contact-call" disabled={offline} title={`Call ${contact.name}`} aria-label={`Call ${contact.name}`} onClick={e => handleCallSavedLine(contact, e)}><Phone size={18} /></button>
                 </div>)}
               </div>
-              <div className="directory-tip"><Lock size={15} /><span>No account. No address-book upload.<br /><strong>Just the people you choose.</strong></span></div>
+              {!savedLines.length && <div className="empty-search"><p>Your Phone Book is empty.</p><button className="btn btn-add" onClick={() => setIsAddContactModalOpen(true)}>Add a connection</button><button className="btn btn-secondary" onClick={() => { setVoiceOnly(false); setDeviceSettingsOpen(true); }}>Import a backup</button></div>}
+              <div className="directory-tip"><Lock size={15} /><span>Saved on this device.<br /><strong>No contact upload.</strong></span><button className="btn btn-quiet" aria-label="Data and backup" onClick={() => { setVoiceOnly(false); setDeviceSettingsOpen(true); }}><Download size={18} /></button></div>
             </section>
             {activeContact && <section className="conversation-panel" aria-label="Selected connection">
-              <div className="conversation-top"><span><span className="status-dot" /> PRIVATE VOICE</span><button className="btn btn-quiet" title="Delete Contact" onClick={e => handleDeleteLine(activeContact.id, e)}><Trash2 size={17} /><span>Remove</span></button></div>
+              <div className="conversation-top"><button className="btn btn-quiet mobile-back" onClick={() => setDetailOpen(false)}><ArrowLeft size={19} /> Phone Book</button><span><span className="status-dot" /> PRIVATE VOICE</span><button className="btn btn-quiet" title="Delete Contact" onClick={e => handleDeleteLine(activeContact.id, e)}><Trash2 size={17} /><span>Remove</span></button></div>
               <div className="conversation-center">
                 <div className="hero-avatar">{activeContact.name.charAt(0).toUpperCase()}</div>
                 <h2>{activeContact.name}</h2>
                 <p>{isPeerOnline ? 'They’re here. Say hello.' : 'A familiar voice is worth making time for.'}</p>
                 {!isSecureLine(activeContact.id, activeContact.passcode) ? <button className="btn btn-add" onClick={upgradeLine}><RefreshCw size={18} /> Upgrade & share new link</button> : <>
-                  <button className="btn btn-primary main-call" onClick={handleRingPartner}><Phone size={21} /> Call Partner</button>
+                  <button className="btn btn-primary main-call" disabled={offline} onClick={handleRingPartner}><Phone size={21} /> Call Partner</button>
                   <span className="call-hint">{isPeerOnline ? 'Available now' : 'Share your invite to get connected'}</span>
                 </>}
               </div>
               <div className="connection-tools">
-                <button className="btn btn-share" onClick={() => setShareContact(activeContact)}><Share2 size={18} /> Share invite</button>
+                <button className="btn btn-share" onClick={() => shareNative(activeContact)}><Share2 size={18} /> Share invite</button>
                 <button className="btn btn-secondary" title="Show QR Code" onClick={() => setIsQrOpen(true)}><QrCode size={18} /> QR code</button>
               </div>
-              <div className="permission-row"><Bell size={18} /><div><strong>{isPushEnabled ? 'Call alerts are on' : 'Don’t miss a hello.'}</strong><p>{isPushEnabled ? 'Temporary delivery routing · device limits apply' : 'Turn on optional background call alerts.'}</p></div><button className="btn btn-alert" onClick={isPushEnabled ? disablePush : handleEnablePush}>{isPushEnabled ? 'Turn off' : 'Enable'}</button></div>
+              <div className="permission-row"><Bell size={18} /><div><strong>{isPushEnabled ? 'Call alerts are on' : 'Don’t miss a hello.'}</strong><p>{isPushEnabled ? 'Temporary delivery routing · device limits apply' : 'Turn on optional background call alerts.'}</p></div><button className="btn btn-alert" disabled={pushBusy} onClick={isPushEnabled ? disablePush : handleEnablePush}>{pushBusy ? 'Enabling…' : isPushEnabled ? 'Turn off' : 'Enable'}</button></div>
             </section>}
           </div>
           {!micReady && <div className="mic-notice"><Mic size={17} /><span>Microphone access is required to make and answer calls.</span><button className="btn btn-secondary" onClick={() => setSetupOpen(true)}>Set up microphone</button></div>}
@@ -1165,227 +1254,24 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* VIEW E: ACTIVE CALL SCREEN */}
-      {(callState === 'connecting' || callState === 'connected' || callState === 'reconnecting') && (
-        <div className="glass-panel call-active-container">
-          <div className="call-status-pill status-connected">
-            <span className="pulse-dot" />
-            <span>
-              {callState === 'connected'
-                ? `Call Active • ${formatDuration(callDuration)} • Encrypted Line`
-                : 'Connecting Audio Channel...'}
-            </span>
-          </div>
-
-          {callState === 'connected' && (
-            <div
-              style={{
-                textAlign: 'center',
-                fontSize: '2.2rem',
-                fontWeight: 700,
-                color: '#ffffff',
-                fontFamily: 'monospace',
-                letterSpacing: '0.06em',
-                margin: '0.4rem 0 0.5rem',
-              }}
-            >
-              {formatDuration(callDuration)}
-            </div>
-          )}
-
-          <div style={{ textAlign: 'center', fontSize: '0.95rem', fontWeight: 600, color: 'rgba(255, 255, 255, 0.85)', marginBottom: '1.25rem' }}>
-            Connected with {savedLines.find((l) => l.id === lineId)?.name || 'Partner'}
-          </div>
-
-          {/* Audio Avatars */}
-          <div className="audio-avatars-container">
-            <div className="avatar-wrapper">
-              <div className={`avatar-disc ${localVolume > 5 && !isMuted ? 'speaking' : ''}`}>
-                {isMuted ? <MicOff size={32} color="rgba(255, 255, 255, 0.4)" /> : <Mic size={32} color="#249c6f" />}
-              </div>
-              <span className="avatar-label">You {isMuted && '(Muted)'}</span>
-              <AudioWaveform volume={localVolume} isActive={!isMuted} color="#249c6f" />
-            </div>
-
-            <div className="avatar-wrapper">
-              <div className={`avatar-disc ${remoteVolume > 5 ? 'speaking' : ''}`}>
-                <Volume2 size={32} color={callState === 'connected' ? '#249c6f' : 'rgba(255, 255, 255, 0.4)'} />
-              </div>
-              <span className="avatar-label">{savedLines.find((l) => l.id === lineId)?.name || 'Partner'}</span>
-              <AudioWaveform volume={remoteVolume} isActive={callState === 'connected'} color="#249c6f" />
-            </div>
-          </div>
-
-          {/* Compact Telemetry Chip (Mobile friendly, tap opens diagnostics) */}
-          <div
-            className="call-telemetry-chip"
-            onClick={() => setIsDiagnosticsOpen(true)}
-            role="button"
-            tabIndex={0}
-            title="Tap for Signal Diagnostics & Profiles"
-          >
-            <span className="telemetry-dot" />
-            <span>{networkStats ? `${networkStats.rtt}ms RTT` : 'Direct HD'}</span>
-            <span className="telemetry-divider">•</span>
-            <span>{networkStats ? `${networkStats.packetLoss}% loss` : '0% loss'}</span>
-            <span className="telemetry-divider">•</span>
-            <span>{SIGNAL_PROFILES[selectedProfile].badge}</span>
-            <Activity size={13} style={{ opacity: 0.65, marginLeft: '3px' }} />
-          </div>
-
-          {/* Desktop Live Metrics (hidden on mobile <= 640px) */}
-          <div className="metrics-strip desktop-only">
-            <div className="metric-box">
-              <div className="metric-label">Latency (RTT)</div>
-              <div className="metric-value good">
-                {networkStats ? `${networkStats.rtt}ms` : '--'}
-              </div>
-            </div>
-            <div className="metric-box">
-              <div className="metric-label">Packet Loss</div>
-              <div className="metric-value good">
-                {networkStats ? `${networkStats.packetLoss}%` : '0%'}
-              </div>
-            </div>
-            <div className="metric-box">
-              <div className="metric-label">Jitter Target</div>
-              <div className="metric-value good">
-                {networkStats ? `${networkStats.jitter}ms` : '40ms'}
-              </div>
-            </div>
-            <div className="metric-box">
-              <div className="metric-label">Profile</div>
-              <div className="metric-value good" style={{ fontSize: '0.85rem' }}>
-                {SIGNAL_PROFILES[selectedProfile].badge}
-              </div>
-            </div>
-          </div>
-
-          {/* Desktop Profile Switcher (hidden on mobile <= 640px) */}
-          <div className="profile-switcher-row desktop-only" style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-            {(Object.keys(SIGNAL_PROFILES) as SignalProfile[]).map((key) => (
-              <button
-                key={key}
-                onClick={() => handleProfileSwitch(key)}
-                className={`btn btn-secondary ${selectedProfile === key ? 'active' : ''}`}
-                style={{
-                  fontSize: '0.78rem',
-                  padding: '0.4rem 0.8rem',
-                  borderColor: selectedProfile === key ? '#249c6f' : undefined,
-                  background: selectedProfile === key ? '#1f1f1f' : undefined,
-                  color: selectedProfile === key ? '#249c6f' : '#ffffff',
-                }}
-              >
-                {SIGNAL_PROFILES[key].badge}
-              </button>
-            ))}
-          </div>
-
-          {/* Voice Loudness Booster */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              background: '#181818',
-              border: '0',
-              borderRadius: '10px',
-              padding: '0.6rem 0.85rem',
-              marginBottom: '1.25rem',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#ffffff', fontSize: '0.82rem' }}>
-              <Volume2 size={16} color="#249c6f" />
-              <span>Voice Loudness:</span>
-            </div>
-            <div style={{ display: 'flex', gap: '0.35rem' }}>
-              {[
-                { label: '1.0x HD Pure', val: 1.0 },
-                { label: '1.5x Loud', val: 1.5 },
-                { label: '2.0x Max', val: 2.0 },
-              ].map((b) => (
-                <button
-                  key={b.val}
-                  onClick={() => handleBoostChange(b.val)}
-                  className={`btn btn-secondary ${boostLevel === b.val ? 'active' : ''}`}
-                  style={{
-                    fontSize: '0.74rem',
-                    padding: '0.3rem 0.6rem',
-                    borderColor: boostLevel === b.val ? '#249c6f' : undefined,
-                    background: boostLevel === b.val ? '#1f1f1f' : undefined,
-                    color: boostLevel === b.val ? '#249c6f' : 'rgba(255, 255, 255, 0.7)',
-                  }}
-                >
-                  {b.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* In-Call Controls Bar */}
-          <div className="call-actions-bar">
-            <button
-              className={`btn btn-icon ${isMuted ? 'btn-danger' : 'btn-secondary'}`}
-              onClick={handleToggleMute}
-              title={isMuted ? 'Unmute Mic' : 'Mute Mic'}
-            >
-              {isMuted ? <MicOff size={22} /> : <Mic size={22} />}
-            </button>
-
-            <button
-              className="btn btn-icon btn-secondary"
-              onClick={() => {
-                setIsChatOpen(!isChatOpen);
-                setHasUnreadChat(false);
-              }}
-              style={{ position: 'relative' }}
-              title="Emergency Text"
-            >
-              <MessageSquare size={22} />
-              {hasUnreadChat && (
-                <span
-                  style={{
-                    position: 'absolute',
-                    top: '8px',
-                    right: '8px',
-                    width: '8px',
-                    height: '8px',
-                    borderRadius: '50%',
-                    background: '#249c6f',
-                  }}
-                />
-              )}
-            </button>
-
-            <button
-              className="btn btn-icon btn-secondary"
-              onClick={() => setIsDiagnosticsOpen(true)}
-              title="Diagnostics"
-            >
-              <Activity size={22} />
-            </button>
-
-            <button
-              className="btn btn-icon btn-secondary"
-              onClick={() => setIsQrOpen(true)}
-              title="Line QR"
-            >
-              <QrCode size={22} />
-            </button>
-
-            <button
-              className="btn btn-icon btn-danger"
-              onClick={handleEndCall}
-              title="End Call"
-            >
-              <PhoneOff size={22} />
-            </button>
-          </div>
+      {isInCall && <main className="call-screen">
+        <header className="call-screen-header"><span><Lock size={14} /> {callState === 'connected' ? 'Call Active' : 'Connecting…'}</span><button className="btn btn-quiet" title="Diagnostics" onClick={() => setIsDiagnosticsOpen(true)}><Activity size={18} /> Details</button></header>
+        <div className="call-person"><div className="hero-avatar">{activeContact?.name.charAt(0).toUpperCase()}</div><h2>{activeContact?.name || 'Your contact'}</h2><time>{formatDuration(callDuration)}</time><div className="local-meter"><AudioWaveform volume={localVolume} isActive={!isMuted} /><span>{isMuted ? 'Your microphone is muted' : 'Your microphone is on'}</span></div></div>
+        {playbackBlocked && <button className="btn btn-alert" onClick={async () => { setPlaybackBlocked(false); await clientRef.current?.audioManager.resumeAudio(); }}>Tap to hear the call</button>}
+        <div className="call-options"><label>Connection quality<select aria-label="Connection quality" value={selectedProfile} onChange={e => handleProfileSwitch(e.target.value as SignalProfile)}>{Object.values(SIGNAL_PROFILES).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button className="btn btn-secondary" onClick={() => { setVoiceOnly(true); setDeviceSettingsOpen(true); }}><SlidersHorizontal size={17} /> {voicePreset.mix ? voicePreset.name : 'Natural voice'}</button></div>
+        <p className="call-quality">{networkStats ? `${networkStats.rtt} ms latency · ${networkStats.packetLoss}% packet loss` : 'Establishing the audio connection…'}</p>
+        <div className="call-controls">
+          <button className={`btn ${isMuted?'btn-alert':'btn-secondary'}`} title={isMuted?'Unmute Mic':'Mute Mic'} onClick={handleToggleMute}>{isMuted?<MicOff size={23}/>:<Mic size={23}/>}<span>{isMuted?'Unmute':'Mute'}</span></button>
+          <button className="btn btn-secondary" title="In-call messages" onClick={() => { setIsChatOpen(true); setHasUnreadChat(false); }}><MessageSquare size={23}/><span>{hasUnreadChat?'New message':'Message'}</span></button>
+          <button className="btn btn-secondary" title="Voice effects" onClick={() => { setVoiceOnly(true); setDeviceSettingsOpen(true); }}><SlidersHorizontal size={23}/><span>Voice</span></button>
+          <button className="btn btn-danger" title="End Call" onClick={handleEndCall}><PhoneOff size={23}/><span>End call</span></button>
         </div>
-      )}
+      </main>}
 
       {/* On-Demand Lazy Loaded Modals for Instant 2G Loading */}
-      <React.Suspense fallback={null}>
+      <OptionalFeatureBoundary key={`${deviceSettingsOpen}-${isDiagnosticsOpen}-${isQrOpen}-${isChatOpen}-${isQrScannerOpen}`} onClose={() => { setDeviceSettingsOpen(false); setIsDiagnosticsOpen(false); setIsQrOpen(false); setIsChatOpen(false); setIsQrScannerOpen(false); }}>
+      <React.Suspense fallback={<div className="toast-banner" role="status">Opening… On a slow connection this may take a moment.</div>}>
+        {deviceSettingsOpen && <DeviceSettings lines={savedLines} voice={voicePreset} onVoice={applyVoice} onImport={importLines} onClear={clearDevice} onClose={() => setDeviceSettingsOpen(false)} voiceOnly={voiceOnly} />}
         {isDiagnosticsOpen && (
           <DiagnosticsModal
             isOpen={isDiagnosticsOpen}
@@ -1422,6 +1308,7 @@ export const App: React.FC = () => {
           />
         )}
       </React.Suspense>
+      </OptionalFeatureBoundary>
     </div>
   );
 };

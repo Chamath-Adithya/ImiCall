@@ -1,98 +1,47 @@
-// Service Worker for ImiCall Background Calling, Web Push Notifications & Instant 2G Offline Caching
-
-const CACHE_NAME = 'imicall-v5-private-cache';
-const PRECACHE_URLS = [
-  '/',
-  '/index.html',
-  '/favicon.svg',
-  '/icon.svg',
-  '/icon-192.svg',
-  '/icon-512.svg',
-  '/manifest.json'
-];
-
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(PRECACHE_URLS).catch((err) => console.warn('Pre-cache warning:', err));
-    })
-  );
-  self.skipWaiting();
+// Versioned app shell: cached UI opens immediately, including offline.
+const CACHE_NAME = 'imicall-shell-__BUILD_ID__';
+const PRECACHE_URLS = /*__PRECACHE__*/ ['/', '/icon.svg', '/manifest.json'];
+const OPTIONAL_URLS = /*__OPTIONAL__*/ [];
+self.addEventListener('install', event => {
+  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(PRECACHE_URLS)));
+  // A new version waits until the user chooses Update, so a call is never interrupted.
 });
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((key) => key.startsWith('imicall-') && key !== CACHE_NAME).map((key) => caches.delete(key))
-      );
-    }).then(() => self.clients.claim())
-  );
+self.addEventListener('activate', event => {
+  event.waitUntil((async () => {
+    const keys = (await caches.keys()).filter(key => key.startsWith('imicall-'));
+    // Keep one previous version for tabs that are still finishing their session.
+    const old = keys.filter(key => key !== CACHE_NAME);
+    await Promise.all(old.slice(0, -1).map(key => caches.delete(key)));
+    await self.clients.claim();
+  })());
 });
-
-// Cache-First strategy for static assets, Network-First for HTML navigation
-self.addEventListener('fetch', (event) => {
+self.addEventListener('message', event => {
+  if (event.data?.type === 'ACTIVATE_UPDATE') self.skipWaiting();
+  if (event.data?.type === 'CACHE_OPTIONAL') event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    for (const url of OPTIONAL_URLS) if (!(await cache.match(url))) {
+      try { const response = await fetch(url); if (response.ok) await cache.put(url, response); } catch { break; }
+    }
+  })());
+});
+self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
-
-  // Skip WebSocket, API, health endpoints, or non-GET
-  if (
-    url.origin !== self.location.origin ||
-    url.pathname.startsWith('/api') ||
-    url.pathname.startsWith('/ws') ||
-    url.pathname.startsWith('/health') ||
-    event.request.method !== 'GET'
-  ) {
-    return;
-  }
-
-  // 1. Static hashed assets (/assets/*): Cache-First for instant 0ms 2G loading
-  if (url.pathname.startsWith('/assets/')) {
-    event.respondWith(
-      caches.match(event.request).then((cachedResponse) => {
-        if (cachedResponse) return cachedResponse;
-        return fetch(event.request).then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            const clone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return networkResponse;
-        });
-      })
-    );
-    return;
-  }
-
-  // 2. Navigation requests: Network-First with instant cached index.html fallback
-  if (event.request.mode === 'navigate') {
-    event.respondWith(
-      fetch(event.request)
-        .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            const clone = networkResponse.clone();
-            if (!url.search) caches.open(CACHE_NAME).then((cache) => cache.put(url.pathname, clone));
-          }
-          return networkResponse;
-        })
-        .catch(async () => (await caches.match('/')) || (await caches.match('/index.html')) || new Response('You are offline. Reconnect to make a call.', { status: 503 }))
-    );
-    return;
-  }
-
-  // 3. Other GET requests (SVGs, icons, manifests)
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      return (
-        cachedResponse ||
-        fetch(event.request).then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            const clone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return networkResponse;
-        })
-      );
-    })
-  );
+  if (url.origin !== self.location.origin || event.request.method !== 'GET' || /^\/(api|ws|health)(\/|$)/.test(url.pathname)) return;
+  // Never put an invitation query string into persistent cache.
+  if (url.search) return;
+  event.respondWith((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    const key = event.request.mode === 'navigate' && url.pathname === '/' ? '/' : event.request;
+    const saved = await cache.match(key);
+    if (saved) return saved;
+    try {
+      const response = await fetch(event.request);
+      if (response.ok && response.type === 'basic') await cache.put(key, response.clone());
+      return response;
+    } catch {
+      return new Response('This screen has not been saved yet. Reconnect once to download it.', { status: 503, headers: { 'Content-Type': 'text/plain' } });
+    }
+  })());
 });
 
 // Push notification handling

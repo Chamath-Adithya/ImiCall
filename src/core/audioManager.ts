@@ -1,204 +1,102 @@
+import type { VoicePreset } from './voicePreset';
+import type { VoiceProcessor } from './voiceProcessor';
 export class AudioManager {
-  private localStream: MediaStream | null = null;
-  private audioContext: AudioContext | null = null;
-  private localAnalyser: AnalyserNode | null = null;
-  private remoteAnalyser: AnalyserNode | null = null;
-  private remoteGainNode: GainNode | null = null;
-  private remoteLimiter: DynamicsCompressorNode | null = null;
-  private wakeLockSentinel: any = null;
-  private isMuted: boolean = false;
-  private boostLevel: number = 1.0; // Default to 1.0 (100% natural studio HD clarity)
-
-  async initLocalAudio(): Promise<MediaStream> {
-    const constraints: MediaStreamConstraints = {
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 1,
-      },
-      video: false,
-    };
-
-    this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
-    this.setupLocalAnalyser(this.localStream);
-    await this.requestWakeLock();
-    return this.localStream;
+ private rawStream: MediaStream | null = null;
+ private localStream: MediaStream | null = null;
+ private audioContext: AudioContext | null = null;
+ private analyser: AnalyserNode | null = null;
+ private analysisSource: MediaStreamAudioSourceNode | null = null;
+ private processor: VoiceProcessor | null = null;
+ private wakeLock: any = null;
+ private muted = false;
+ private filterFailed = false;
+ private generation = 0;
+ private audioElement: HTMLAudioElement | null = null;
+ public onPlaybackBlocked: (() => void) | null = null;
+ public onFilterFailure: (() => void) | null = null;
+ prepareAudio() {
+  if (!this.audioContext || this.audioContext.state === 'closed') this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+  void this.audioContext.resume().catch(() => {});
+ }
+ async initLocalAudio() {
+  // Create/resume synchronously in the tap handler, before getUserMedia resolves.
+  this.prepareAudio(); const generation = this.generation;
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone needs a secure HTTPS address. Local network HTTP addresses cannot request permission.');
+  let stream: MediaStream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }, video: false }); }
+  catch (error) {
+   if (error instanceof DOMException && error.name === 'OverconstrainedError') stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+   else throw error;
   }
-
-  getLocalStream(): MediaStream | null {
-    return this.localStream;
-  }
-
-  toggleMute(): boolean {
-    if (!this.localStream) return false;
-    this.isMuted = !this.isMuted;
-    this.localStream.getAudioTracks().forEach((track) => {
-      track.enabled = !this.isMuted;
-    });
-    return this.isMuted;
-  }
-
-  getIsMuted(): boolean {
-    return this.isMuted;
-  }
-
-  /**
-   * Sets the volume boost level (e.g., 1.0 = HD Pure, 1.5 = Loud, 2.0 = Max).
-   */
-  setBoostLevel(multiplier: number) {
-    this.boostLevel = multiplier;
-    if (this.remoteGainNode && this.audioContext && this.audioContext.state !== 'closed') {
-      try {
-        this.remoteGainNode.gain.setValueAtTime(multiplier, this.audioContext.currentTime);
-      } catch (e) {
-        this.remoteGainNode.gain.value = multiplier;
-      }
-    }
-  }
-
-  getBoostLevel(): number {
-    return this.boostLevel;
-  }
-
-  resumeAudio() {
-    if (this.audioContext && this.audioContext.state === 'suspended') {
-      this.audioContext.resume().catch(() => {});
-    }
-  }
-
-  /**
-   * High-Fidelity Remote Audio Pipeline:
-   * 1. Direct Web Audio MediaStream source (routed to loudspeaker)
-   * 2. Pure Hardware Gain Booster (1.0x HD default, undistorted)
-   * 3. Transparent Peak Limiter (prevents digital clipping only without squashing voice)
-   * 4. Direct destination to phone loudspeaker
-   */
-  setupRemoteAudio(remoteStream: MediaStream, audioElement: HTMLAudioElement) {
-    try {
-      if (!this.audioContext || this.audioContext.state === 'closed') {
-        this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      }
-      if (this.audioContext.state === 'suspended') {
-        this.audioContext.resume().catch(() => {});
-      }
-
-      const source = this.audioContext.createMediaStreamSource(remoteStream);
-
-      // 1. Live VU meter analyser
-      this.remoteAnalyser = this.audioContext.createAnalyser();
-      this.remoteAnalyser.fftSize = 64;
-      source.connect(this.remoteAnalyser);
-
-      // 2. Hardware Loudness Booster (GainNode: 1.0x HD default)
-      this.remoteGainNode = this.audioContext.createGain();
-      this.remoteGainNode.gain.setValueAtTime(this.boostLevel, this.audioContext.currentTime);
-
-      // 3. Transparent Peak Limiter (only engages on loud peaks to prevent digital clipping)
-      this.remoteLimiter = this.audioContext.createDynamicsCompressor();
-      this.remoteLimiter.threshold.setValueAtTime(-1.0, this.audioContext.currentTime);
-      this.remoteLimiter.knee.setValueAtTime(10, this.audioContext.currentTime);
-      this.remoteLimiter.ratio.setValueAtTime(4.0, this.audioContext.currentTime);
-      this.remoteLimiter.attack.setValueAtTime(0.003, this.audioContext.currentTime);
-      this.remoteLimiter.release.setValueAtTime(0.05, this.audioContext.currentTime);
-
-      // Clean signal path: source -> gainNode -> transparentLimiter -> destination (Loudspeaker)
-      source.connect(this.remoteGainNode);
-      this.remoteGainNode.connect(this.remoteLimiter);
-      this.remoteLimiter.connect(this.audioContext.destination);
-
-      // Silent keepalive on native element
-      audioElement.srcObject = remoteStream;
-      audioElement.muted = true;
-      if ('setSinkId' in audioElement && typeof (audioElement as any).setSinkId === 'function') {
-        (audioElement as any).setSinkId('default').catch(() => {});
-      }
-      audioElement.play().catch(() => {});
-    } catch (err) {
-      console.warn('[Audio] Web Audio amplification fallback to native audioElement:', err);
-      audioElement.srcObject = remoteStream;
-      audioElement.muted = false;
-      audioElement.volume = 1.0;
-      audioElement.play().catch(() => {});
-    }
-  }
-
-  private setupLocalAnalyser(stream: MediaStream) {
-    try {
-      if (!this.audioContext || this.audioContext.state === 'closed') {
-        this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      }
-      if (this.audioContext.state === 'suspended') {
-        this.audioContext.resume().catch(() => {});
-      }
-      const source = this.audioContext.createMediaStreamSource(stream);
-      this.localAnalyser = this.audioContext.createAnalyser();
-      this.localAnalyser.fftSize = 64;
-      source.connect(this.localAnalyser);
-    } catch (err) {
-      console.warn('[Audio] Could not attach local analyser:', err);
-    }
-  }
-
-  getLocalVolume(): number {
-    if (this.isMuted || !this.localAnalyser) return 0;
-    return this.calculateVolume(this.localAnalyser);
-  }
-
-  getRemoteVolume(): number {
-    if (!this.remoteAnalyser) return 0;
-    return this.calculateVolume(this.remoteAnalyser);
-  }
-
-  private calculateVolume(analyser: AnalyserNode): number {
-    try {
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteFrequencyData(dataArray);
-      let sum = 0;
-      for (let i = 0; i < dataArray.length; i++) {
-        sum += dataArray[i];
-      }
-      const average = sum / dataArray.length;
-      return Math.min(100, Math.round((average / 255) * 100));
-    } catch (e) {
-      return 0;
-    }
-  }
-
-  async requestWakeLock() {
-    try {
-      if ('wakeLock' in navigator && !this.wakeLockSentinel) {
-        this.wakeLockSentinel = await (navigator as any).wakeLock.request('screen');
-        this.wakeLockSentinel.addEventListener('release', () => {
-          this.wakeLockSentinel = null;
-        });
-      }
-    } catch (err) {
-      console.info('[Audio] Screen wake lock not supported or denied');
-    }
-  }
-
-  releaseWakeLock() {
-    if (this.wakeLockSentinel) {
-      this.wakeLockSentinel.release().catch(() => {});
-      this.wakeLockSentinel = null;
-    }
-  }
-
-  cleanup() {
-    this.isMuted = false;
-    this.releaseWakeLock();
-    if (this.localStream) {
-      this.localStream.getTracks().forEach((track) => track.stop());
-      this.localStream = null;
-    }
-    if (this.audioContext && this.audioContext.state !== 'closed') {
-      this.audioContext.close().catch(() => {});
-      this.audioContext = null;
-    }
-    this.localAnalyser = null;
-    this.remoteAnalyser = null;
-    this.remoteGainNode = null;
-    this.remoteLimiter = null;
-  }
+  if (generation !== this.generation) { stream.getTracks().forEach(t => t.stop()); throw new Error('Call cancelled'); }
+  this.rawStream = stream; this.localStream = stream; this.attachAnalyser(stream); void this.requestWakeLock(); return stream;
+ }
+ private attachAnalyser(stream: MediaStream) {
+  this.analysisSource?.disconnect();
+  if (!this.audioContext) return;
+  this.analysisSource = this.audioContext.createMediaStreamSource(stream);
+  this.analyser = this.audioContext.createAnalyser(); this.analyser.fftSize = 64; this.analysisSource.connect(this.analyser);
+ }
+ getLocalStream() { return this.localStream; }
+ getIsMuted() { return this.muted; }
+ setMuted(muted: boolean) { this.muted = muted; for (const stream of [this.rawStream, this.localStream]) stream?.getAudioTracks().forEach(t => { t.enabled = !muted; }); }
+ toggleMute() { if (this.filterFailed) return true; this.setMuted(!this.muted); return this.muted; }
+ async applyVoice(preset: VoicePreset, replace: (track: MediaStreamTrack) => Promise<void>) {
+  if (!this.rawStream || !this.audioContext) return;
+  const generation = this.generation;
+  const wasMuted = this.muted;
+  // Mute while switching. Failure must not silently expose the natural voice.
+  this.setMuted(true);
+  try {
+   if (preset.mix === 0) {
+    await replace(this.rawStream.getAudioTracks()[0]);
+    this.processor?.stop(); this.processor = null; this.localStream = this.rawStream;
+   } else {
+    if (!this.processor) {
+     const { VoiceProcessor } = await import('./voiceProcessor');
+     if (generation !== this.generation) throw new Error('Call ended');
+     const processor = new VoiceProcessor();
+     const output = await processor.start(this.audioContext, this.rawStream, preset, () => {
+      if (generation !== this.generation) return;
+      this.filterFailed = true; this.setMuted(true); this.processor?.stop(); this.processor = null; this.onFilterFailure?.();
+     });
+     if (generation !== this.generation) { processor.stop(); throw new Error('Call ended'); }
+     output.getTracks().forEach(t => { t.enabled = false; });
+     this.processor = processor;
+     await replace(output.getAudioTracks()[0]);
+     this.localStream = output;
+    } else this.processor.update(preset);
+   }
+   if (generation !== this.generation) return;
+   this.filterFailed = false; this.attachAnalyser(this.localStream!); this.setMuted(wasMuted);
+  } catch (error) { if (generation !== this.generation) throw error; this.processor?.stop(); this.processor = null; this.filterFailed = true; this.setMuted(true); this.onFilterFailure?.(); throw error; }
+ }
+ setupRemoteAudio(stream: MediaStream, element: HTMLAudioElement) {
+  this.audioElement = element; element.srcObject = stream; element.muted = false; element.volume = 1;
+  element.autoplay = true; element.setAttribute('playsinline', '');
+  // Native media playback is more reliable on Safari than a muted element + Web Audio graph.
+  void element.play().catch(() => this.onPlaybackBlocked?.());
+ }
+ async resumeAudio() {
+  if (this.audioContext?.state === 'suspended') await this.audioContext.resume().catch(() => {});
+  if (this.audioElement) await this.audioElement.play().catch(() => this.onPlaybackBlocked?.());
+ }
+ getLocalVolume() {
+  if (this.muted || !this.analyser) return 0;
+  const buffer = new Uint8Array(this.analyser.frequencyBinCount); this.analyser.getByteFrequencyData(buffer);
+  return Math.round(buffer.reduce((a,b) => a+b,0) / buffer.length / 255 * 100);
+ }
+ getRemoteVolume() { return 0; } // Native playback avoids a second audio graph on mobile.
+ async requestWakeLock() { try { if ('wakeLock' in navigator) this.wakeLock = await (navigator as any).wakeLock.request('screen'); } catch {} }
+ cleanup() {
+  this.generation++; this.muted = false; this.filterFailed = false;
+  void this.wakeLock?.release().catch(() => {}); this.wakeLock = null;
+  this.processor?.stop(); this.processor = null;
+  for (const stream of [this.rawStream, this.localStream]) stream?.getTracks().forEach(t => t.stop());
+  this.localStream = this.rawStream = null;
+  this.analysisSource?.disconnect(); this.analysisSource = null; this.analyser = null;
+  if (this.audioContext && this.audioContext.state !== 'closed') void this.audioContext.close().catch(() => {});
+  this.audioContext = null;
+  if (this.audioElement) { this.audioElement.pause(); this.audioElement.srcObject = null; this.audioElement = null; }
+ }
 }
