@@ -472,10 +472,13 @@ export class WebRTCClient {
   }
 
   private setupDataChannel(channel: RTCDataChannel) {
+    let chatCount = 0, chatWindow = Date.now();
     channel.onmessage = (event) => {
+      if (Date.now() - chatWindow > 10000) { chatCount = 0; chatWindow = Date.now(); }
+      if (typeof event.data !== 'string' || event.data.length > 8192 || ++chatCount > 30) { channel.close(); this.onError?.('Messaging stopped because the peer exceeded message limits.'); return; }
       try {
         const parsed = JSON.parse(event.data);
-        if (parsed.type === 'chat' && typeof parsed.text === 'string' && parsed.text.length <= 4000 && this.onChatMessage) {
+        if (parsed?.type === 'chat' && typeof parsed.id === 'string' && parsed.id.length <= 80 && Number.isFinite(parsed.timestamp) && typeof parsed.text === 'string' && parsed.text.length <= 4000 && this.onChatMessage) {
           this.onChatMessage({
             id: parsed.id,
             sender: 'peer',
@@ -484,7 +487,7 @@ export class WebRTCClient {
           });
         }
       } catch (err) {
-        console.error('[WebRTC] DataChannel parse error:', err);
+        channel.close(); this.onError?.('Messaging stopped: invalid peer data.');
       }
     };
   }

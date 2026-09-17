@@ -1,6 +1,7 @@
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { spawn, ChildProcess } from 'node:child_process';
 import { WebSocket } from 'ws';
+import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 const port = 18189, base = `http://localhost:${port}`;
 let server: ChildProcess;
@@ -14,11 +15,19 @@ describe('Actual production relay', () => {
    const r = await fetch(base); expect(r.headers.get('x-content-type-options')).toBe('nosniff'); expect(r.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
    const config = await (await fetch(base + '/api/config')).json(); expect(config.iceServers).toBeUndefined(); expect(config.relayConfigured).toBe(true);
    expect((await fetch(base + '/api/ice', {method:'POST',body:JSON.stringify({})})).status).toBe(403);
-   expect((await fetch(base + '/health', {headers:{Host:'evil.invalid'}})).status).toBe(403);
+   expect(await new Promise<number|undefined>((resolve,reject)=>{http.get(base+'/health',{headers:{Host:'evil.invalid'}},r=>{r.resume();resolve(r.statusCode);}).on('error',reject);})).toBe(403);
    expect(r.headers.get('content-security-policy')).not.toContain(' ws: wss:');
    expect((await fetch(base + '/api/deleted-connections')).status).toBe(404);
    expect((await fetch(base + '/api/push-subscribe', { method: 'POST', body: JSON.stringify({ roomId: 'nope' }) })).status).toBe(403);
    expect((await fetch(base + '/api/config', { headers: { Origin: 'https://evil.invalid' } })).status).toBe(403);
+ });
+ it('rejects a WebSocket handshake with an untrusted Origin', async()=>{
+   const rejected = new WebSocket(`ws://localhost:${port}/ws`, {origin:'https://evil.invalid'});
+   await new Promise<void>((resolve,reject)=>{rejected.once('error',()=>resolve());rejected.once('open',()=>{rejected.terminate();reject(new Error('Unexpected origin accepted'));});});
+ });
+ it('closes malformed nonce messages instead of relaying them', async()=>{
+   const a=await socket();let reply=next(a);a.send(JSON.stringify({type:'join',roomId:'line-'+randomBytes(16).toString('hex'),auth:randomBytes(32).toString('hex'),deviceId:randomBytes(16).toString('hex')}));await reply;
+   const closed=new Promise(r=>a.once('close',r));a.send(JSON.stringify({type:'candidate',payload:{iv:Array(12).fill(256),data:'YQ=='}}));await closed;
  });
  it('pairs only authenticated room members and rejects duplicate joins and third peers', async () => {
    const roomId = 'line-' + randomBytes(16).toString('hex'), auth = randomBytes(32).toString('hex');

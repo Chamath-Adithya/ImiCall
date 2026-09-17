@@ -65,10 +65,11 @@ async function bodyOf(req) {
 function allowedEndpoint(endpoint) {
   try {
     const u = new URL(endpoint);
-    return u.protocol === 'https:' && !u.username && !u.password && (!u.port || u.port === '443') && ['fcm.googleapis.com', 'updates.push.services.mozilla.com', 'web.push.apple.com', 'notify.windows.com'].some(h => u.hostname === h || u.hostname.endsWith(`.${h}`));
+    return endpoint.length <= 2048 && u.protocol === 'https:' && !u.username && !u.password && (!u.port || u.port === '443') && ['fcm.googleapis.com', 'updates.push.services.mozilla.com', 'web.push.apple.com', 'notify.windows.com'].some(h => u.hostname === h || u.hostname.endsWith(`.${h}`));
   } catch { return false; }
 }
 const server = http.createServer(async (req, res) => {
+ try {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -97,7 +98,7 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname.endsWith('unsubscribe')) { room.push.delete(deviceId); return json(res, 200, { success: true }); }
       if (!allowedEndpoint(subscription?.endpoint) || typeof subscription?.keys?.p256dh !== 'string' || typeof subscription?.keys?.auth !== 'string' || !/^[A-Za-z0-9_-]{87}=?$/.test(subscription.keys.p256dh) || !/^[A-Za-z0-9_-]{22}={0,2}$/.test(subscription.keys.auth)) return json(res, 400, { error: 'Unsupported push subscription' });
       if (room.push.size >= 2 && !room.push.has(deviceId)) return json(res, 409, { error: 'Two devices are already subscribed' });
-      room.push.set(deviceId, { subscription, expires: Date.now() + DAY });
+      room.push.set(deviceId, { subscription: { endpoint: subscription.endpoint, keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth } }, expires: Date.now() + DAY });
       return json(res, 200, { success: true });
     } catch { return json(res, 400, { error: 'Invalid request' }); }
   }
@@ -115,8 +116,9 @@ const server = http.createServer(async (req, res) => {
   if (!file.startsWith(root + path.sep)) return json(res, 403, { error: 'Forbidden' });
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return json(res, 404, { error: 'Not found' });
   serve(file, req, res);
+ } catch { if (!res.headersSent) json(res, 500, { error: 'Request could not be completed' }); else res.destroy(); }
 });
-const wss = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024, perMessageDeflate: false });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
 server.requestTimeout = 15000; server.headersTimeout = 10000; server.keepAliveTimeout = 5000; server.maxConnections = 1200;
 server.on('upgrade', (req, socket, head) => {
   if (req.url !== '/ws' || (!validRequestOrigin(req) || !req.headers.origin) || wss.clients.size >= 1000) { socket.destroy(); return; }
@@ -152,8 +154,8 @@ wss.on('connection', ws => {
         return;
       }
       const room = rooms.get(current);
-      if (!room || !room.clients.has(ws) || !allowedTypes.has(msg.type) || !Array.isArray(msg.payload?.iv) || msg.payload.iv.length !== 12 || typeof msg.payload?.data !== 'string' || msg.payload.iv.some(n => !Number.isInteger(n) || n < 0 || n > 255) || msg.payload.data.length > 100000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(msg.payload.data) || msg.payload.data.length % 4 !== 0) return ws.close(1008, 'Invalid signal');
-      const message = { type: msg.type, payload: msg.payload };
+      if (!room || !room.clients.has(ws) || !allowedTypes.has(msg.type) || !Array.isArray(msg.payload?.iv) || msg.payload.iv.length !== 12 || typeof msg.payload?.data !== 'string' || msg.payload.iv.some(n => !Number.isInteger(n) || n < 0 || n > 255) || msg.payload.data.length > (['offer','answer'].includes(msg.type) ? 48000 : 4096) || !/^[A-Za-z0-9+/]+={0,2}$/.test(msg.payload.data) || msg.payload.data.length % 4 !== 0) return ws.close(1008, 'Invalid signal');
+      const message = { type: msg.type, payload: { iv: msg.payload.iv, data: msg.payload.data } };
       if (msg.type === 'call-ring') {
         if (Date.now() - (room.lastRing.get(device) || 0) < 3000) { send(ws, { type: 'error', message: 'Please wait a few seconds before calling again.' }); return; }
         if (room.lastRing.size > 10) room.lastRing.clear();

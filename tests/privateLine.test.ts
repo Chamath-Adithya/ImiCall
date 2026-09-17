@@ -27,6 +27,8 @@ describe('Private invitation and authenticated signaling', () => {
     const id = newLineId(), secret = newLineSecret(), a = new PrivateSignaling(id), b = new PrivateSignaling(id);
     await Promise.all([a.init(secret), b.init(secret)]);
     const packet = await a.seal('call-ring');
+    const invalid = {...packet, iv: [...packet.iv]}; invalid.iv[0] += 256;
+    await expect(b.open('call-ring', invalid)).rejects.toThrow('Invalid encrypted signal');
     packet.iv[0] ^= 1;
     await expect(b.open('call-ring', packet)).rejects.toThrow();
     const fresh = await a.seal('call-ring');
