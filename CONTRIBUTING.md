@@ -6,7 +6,7 @@ Help make the first conversation easier, especially on modest devices and weak n
 
 Use Node 24 (minimum 22.12). Run `npm ci`, then `npm start`. The app and signaling server are available at `http://localhost:8080`.
 
-Run `npm test` and `npm run build`. Browser scripts in `scripts/` use Chrome and fake microphones for reproducible local checks. They do not replace physical iPhone, Pixel or real-network testing. Existing call tests explicitly select Direct mode because no local TURN relay is provided.
+Run `npm run build` before `npm test`; HTTP integration tests inspect the generated production assets. Browser scripts in `scripts/` use Chrome and fake microphones for reproducible local checks. They do not replace physical iPhone, Pixel or real-network testing. Existing call tests explicitly select Direct mode because no local TURN relay is provided.
 
 ## Useful contributions
 

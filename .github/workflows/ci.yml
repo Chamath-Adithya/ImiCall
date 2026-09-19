@@ -12,5 +12,6 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm test
+      # HTTP compression tests exercise the generated production assets.
       - run: npm run build
+      - run: npm test
