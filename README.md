@@ -1,6 +1,26 @@
+<p align="center"><img src="public/icon.svg" alt="ImiCall" width="76" height="76"></p>
+
 # ImiCall
 
-A lightweight, account-free, two-person browser calling app with a local phone book.
+**Just a link. Then a little closer.**
+
+Private browser calls without an account or phone number. Share an invitation with one person, keep your contacts on your device, and make room for a good conversation.
+
+[How it works](#run) · [Contribute](CONTRIBUTING.md) · [Security](SECURITY.md) · [Privacy model](#privacy-and-security-model)
+
+## Why it exists
+
+Sometimes you want to hear someone without exchanging personal phone numbers or creating another account. ImiCall gives two browsers a shared line, a searchable local Phone Book, and a short-message fallback when voice is impractical.
+
+- Encrypted call setup and WebRTC voice; relay-only transport by default.
+- Device-local contacts, password-encrypted backups and a temporary-session option.
+- Low-bitrate voice profiles and Tiny messages for constrained connections.
+- Optional local voice effects, explicit preset import/export and mobile layouts.
+- A cached interface, no external fonts and no analytics.
+
+**Release status:** source available; source-code license pending. A source-code license must be chosen before the open-source launch. No independent security audit or guarantee of anonymity is claimed. Default voice calls need a working TURN deployment; local Direct-mode tests do not prove production relay reliability.
+
+The separate Astro website lives in the ImiCall-Website project. Planned domains: `imicall.com` for the website and `app.imicall.com` for the app; these links require deployment before announcement.
 
 ## Run
 

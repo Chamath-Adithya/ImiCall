@@ -1,0 +1,13 @@
+name: Improvement idea
+description: Explain a real use case and a small improvement.
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested improvement and tradeoffs
