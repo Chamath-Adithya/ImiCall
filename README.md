@@ -1,12 +1,14 @@
-<p align="center"><img src="public/icon.svg" alt="ImiCall" width="76" height="76"></p>
+<p align="center"><img src="docs/assets/imicall-social.jpg" alt="ImiCall — Just a link. Then a little closer." width="100%"></p>
 
 # ImiCall
 
 **Just a link. Then a little closer.**
 
+[![App checks](https://github.com/Chamath-Adithya/ImiCall/actions/workflows/ci.yml/badge.svg)](https://github.com/Chamath-Adithya/ImiCall/actions/workflows/ci.yml)
+
 Private browser calls without an account or phone number. Share an invitation with one person, keep your contacts on your device, and make room for a good conversation.
 
-[How it works](#run) · [Contribute](CONTRIBUTING.md) · [Security](SECURITY.md) · [Privacy model](#privacy-and-security-model)
+[How it works](#run) · [Contribute](CONTRIBUTING.md) · [Security](SECURITY.md) · [Privacy model](#privacy-and-security-model) · [Roadmap](ROADMAP.md) · [Project governance](GOVERNANCE.md)
 
 ## Why it exists
 
@@ -95,3 +97,15 @@ Static responses use cached Brotli compression where accepted, with gzip fallbac
 ## Server hardening
 
 The server validates Host and WebSocket Origin, bounds HTTP bodies, signaling frames, queues and rates, and constrains push endpoints and subscription keys. Public configuration contains no TURN credentials. `/api/ice` issues short-lived credentials only for a room-authenticated device with an active socket, subject to issuance limits. Anonymous room creation still requires operator-level relay quotas and abuse protection. TLS, infrastructure logs and denial-of-service protection remain deployment responsibilities.
+
+## Ownership and sustainability
+
+Created and maintained by [Chamath Adithya](https://github.com/Chamath-Adithya). Authors retain copyright in their own material; project maintenance is not ownership of every contribution. See [governance](GOVERNANCE.md), [brand policy](TRADEMARKS.md) and the [commercial direction](COMMERCIAL.md).
+
+The intended business is paid hosting, deployment help and support alongside open code. These are plans, not currently sold services. Open source permits commercial forks too; it does not guarantee exclusive revenue or prevent competition.
+
+## Find a useful first contribution
+
+Choose a small item from the [roadmap](ROADMAP.md), read [CONTRIBUTING.md](CONTRIBUTING.md), and describe a reproducible improvement. Device testing, accessible interactions and clear explanations matter as much as code. Read the [architecture](docs/ARCHITECTURE.md) and [release checklist](docs/RELEASE_CHECKLIST.md) for changes near a privacy or deployment boundary.
+
+Third-party components keep their own licenses and attribution. See [the dependency notice inventory](THIRD_PARTY_NOTICES.md). Reproduce it after dependency changes with `node scripts/generate-notices.mjs` and review the result.
